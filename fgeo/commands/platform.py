@@ -96,6 +96,7 @@ def show(
         f"  Pace:         {plat['pace'] or '(none)'}\n"
         f"  Status:       {plat['status']}\n"
         f"  Last Publish: {plat['last_published_at'] or '-'}\n"
+        f"  Publish URL:  {plat.get('publish_url') or '(not set)'}\n"
     )
 
     # Content breakdown
@@ -118,7 +119,7 @@ def show(
 def set_field(
     project: str = typer.Argument(help="Project name"),
     name: str = typer.Argument(help="Platform name"),
-    field: str = typer.Argument(help="Field: directions, pace, status, last_published_at"),
+    field: str = typer.Argument(help="Field: directions, pace, status, publish_url, last_published_at"),
     value: str = typer.Argument(help="New value"),
 ) -> None:
     """Update a platform field."""

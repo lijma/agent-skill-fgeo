@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fgeo"
-version = "0.2.0"
+version = "0.4.0"
 description = "fgeo — Generative Engine Optimization CLI. AI-powered content asset management and multi-platform distribution."
 readme = "README.md"
 requires-python = ">=3.10"

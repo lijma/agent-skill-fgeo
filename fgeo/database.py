@@ -11,7 +11,7 @@ from fgeo.constants import FGEO_HOME
 
 FGEO_DB_FILE = FGEO_HOME / "fgeo.db"
 
-SCHEMA_VERSION = "0.2.0"
+SCHEMA_VERSION = "0.4.0"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS platforms (
     name        TEXT NOT NULL,
     directions  TEXT DEFAULT '',
     pace        TEXT DEFAULT '',
+    publish_url TEXT DEFAULT '',
     status      TEXT DEFAULT 'active' CHECK(status IN ('active','paused','archived')),
     last_published_at TEXT DEFAULT '',
     created_at  TEXT NOT NULL,
@@ -86,9 +87,42 @@ CREATE TABLE IF NOT EXISTS contents (
     updated_at    TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS publish_tasks (
+    id          TEXT PRIMARY KEY,
+    content_id  TEXT NOT NULL REFERENCES contents(id) ON DELETE CASCADE,
+    platform_id TEXT DEFAULT NULL REFERENCES platforms(id),
+    repo_url    TEXT DEFAULT '',
+    branch      TEXT DEFAULT '',
+    pr_url      TEXT DEFAULT '',
+    task_dir    TEXT DEFAULT '',
+    status      TEXT DEFAULT 'pr_open' CHECK(status IN ('pr_open','merged','failed')),
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS brand (
+    id          TEXT PRIMARY KEY DEFAULT 'singleton',
+    name        TEXT DEFAULT '',
+    positioning TEXT DEFAULT '',
+    voice       TEXT DEFAULT '',
+    core_values TEXT DEFAULT '',
+    topics      TEXT DEFAULT '',
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS styles (
+    platform    TEXT PRIMARY KEY,
+    desc        TEXT DEFAULT '',
+    formula     TEXT DEFAULT '',
+    tone        TEXT DEFAULT '',
+    format      TEXT DEFAULT '',
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
 );
 """
 
@@ -122,8 +156,14 @@ class Database:
         return self._conn
 
     def init_schema(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist. Applies migrations for column additions."""
         self.conn.executescript(SCHEMA_SQL)
+        # Migration 0.3.0 → 0.4.0: add publish_url to existing platforms tables
+        existing_cols = {
+            row[1] for row in self.conn.execute("PRAGMA table_info(platforms)").fetchall()
+        }
+        if "publish_url" not in existing_cols:
+            self.conn.execute("ALTER TABLE platforms ADD COLUMN publish_url TEXT DEFAULT ''")
         self.conn.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
             ("version", SCHEMA_VERSION),
@@ -281,7 +321,7 @@ class Database:
         plat = self.get_platform(project_name, platform_name)
         if not plat:
             return None
-        allowed = {"directions", "pace", "status", "last_published_at"}
+        allowed = {"directions", "pace", "status", "last_published_at", "publish_url"}
         if field not in allowed:
             return None
         self.conn.execute(
@@ -572,6 +612,156 @@ class Database:
             "plans": plan_stats,
             "platforms": platform_stats,
         }
+
+    # ── Brand ─────────────────────────────────────────────────────
+
+    BRAND_FIELDS = {"name", "positioning", "voice", "core_values", "topics"}
+
+    def get_brand(self) -> dict[str, Any]:
+        """Return the brand singleton row, or empty defaults if not yet set."""
+        row = self.conn.execute("SELECT * FROM brand WHERE id='singleton'").fetchone()
+        if row:
+            return dict(row)
+        return {"id": "singleton", "name": "", "positioning": "", "voice": "", "core_values": "", "topics": "", "updated_at": ""}
+
+    def set_brand(self, field: str, value: str) -> dict[str, Any] | None:
+        """Set a brand field (upserts the singleton row)."""
+        if field not in self.BRAND_FIELDS:
+            return None
+        now = _now()
+        existing = self.conn.execute("SELECT id FROM brand WHERE id='singleton'").fetchone()
+        if existing:
+            self.conn.execute(
+                f"UPDATE brand SET {field}=?, updated_at=? WHERE id='singleton'",
+                (value, now),
+            )
+        else:
+            # Insert singleton with defaults, then set the field
+            self.conn.execute(
+                "INSERT INTO brand (id, name, positioning, voice, core_values, topics, updated_at) "
+                "VALUES ('singleton','','','','','',?)",
+                (now,),
+            )
+            self.conn.execute(
+                f"UPDATE brand SET {field}=?, updated_at=? WHERE id='singleton'",
+                (value, now),
+            )
+        self.conn.commit()
+        return self.get_brand()
+
+    # ── Styles ──────────────────────────────────────────────────
+
+    STYLE_FIELDS = {"desc", "formula", "tone", "format"}
+
+    STYLE_ALIASES: dict[str, str] = {
+        "x": "twitter",
+        "wechat": "公众号",
+        "bilibili": "B站",
+    }
+
+    def _resolve_platform(self, platform: str) -> str:
+        return self.STYLE_ALIASES.get(platform.lower(), platform)
+
+    def add_style(
+        self,
+        platform: str,
+        desc: str = "",
+        formula: str = "",
+        tone: str = "",
+        fmt: str = "",
+    ) -> dict[str, Any]:
+        """Add a writing style for a platform. Raises ValueError if already exists."""
+        platform = self._resolve_platform(platform)
+        now = _now()
+        try:
+            self.conn.execute(
+                "INSERT INTO styles (platform, desc, formula, tone, format, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (platform, desc, formula, tone, fmt, now, now),
+            )
+            self.conn.commit()
+        except sqlite3.IntegrityError:
+            raise ValueError(f"Style already exists for platform '{platform}'. Use 'fgeo style set' to update.")
+        row = self.conn.execute("SELECT * FROM styles WHERE platform=?", (platform,)).fetchone()
+        return dict(row)
+
+    def get_style(self, platform: str) -> dict[str, Any] | None:
+        platform = self._resolve_platform(platform)
+        row = self.conn.execute("SELECT * FROM styles WHERE platform=?", (platform,)).fetchone()
+        return dict(row) if row else None
+
+    def list_styles(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM styles ORDER BY platform").fetchall()
+        return [dict(r) for r in rows]
+
+    def update_style(self, platform: str, field: str, value: str) -> dict[str, Any] | None:
+        platform = self._resolve_platform(platform)
+        if field not in self.STYLE_FIELDS:
+            return None
+        style = self.get_style(platform)
+        if not style:
+            return None
+        self.conn.execute(
+            f"UPDATE styles SET {field}=?, updated_at=? WHERE platform=?",
+            (value, _now(), platform),
+        )
+        self.conn.commit()
+        return self.get_style(platform)
+
+    # ── Publish Tasks ─────────────────────────────────────────────
+
+    def create_publish_task(
+        self,
+        task_id: str,
+        content_id: str,
+        platform_id: str = "",
+        repo_url: str = "",
+        branch: str = "",
+        task_dir: str = "",
+        pr_url: str = "",
+        status: str = "pr_open",
+    ) -> dict[str, Any]:
+        now = _now()
+        self.conn.execute(
+            "INSERT INTO publish_tasks (id, content_id, platform_id, repo_url, branch, task_dir, pr_url, status, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (task_id, content_id, platform_id or None, repo_url, branch, task_dir, pr_url, status, now, now),
+        )
+        self.conn.commit()
+        return self.get_publish_task(task_id) or {}
+
+    def get_publish_task(self, task_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM publish_tasks WHERE id=?", (task_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_publish_tasks(self, status: str = "", content_id: str = "") -> list[dict[str, Any]]:
+        q = "SELECT pt.*, c.title as content_title FROM publish_tasks pt LEFT JOIN contents c ON pt.content_id=c.id"
+        params: list[str] = []
+        wheres: list[str] = []
+        if status:
+            wheres.append("pt.status=?")
+            params.append(status)
+        if content_id:
+            wheres.append("pt.content_id=?")
+            params.append(content_id)
+        if wheres:
+            q += " WHERE " + " AND ".join(wheres)
+        q += " ORDER BY pt.created_at DESC"
+        return [dict(r) for r in self.conn.execute(q, params).fetchall()]
+
+    def update_publish_task(self, task_id: str, field: str, value: str) -> dict[str, Any] | None:
+        allowed = {"status", "pr_url", "branch", "repo_url", "task_dir"}
+        if field not in allowed:
+            return None
+        task = self.get_publish_task(task_id)
+        if not task:
+            return None
+        self.conn.execute(
+            f"UPDATE publish_tasks SET {field}=?, updated_at=? WHERE id=?",
+            (value, _now(), task_id),
+        )
+        self.conn.commit()
+        return self.get_publish_task(task_id)
 
     # ── Helpers ───────────────────────────────────────────────────
 

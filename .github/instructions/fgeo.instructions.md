@@ -1,25 +1,4 @@
-"""fgeo enable — Activate AI agent skills (copilot, cursor, etc.) with fcontext integration."""
-
-from __future__ import annotations
-
-import shutil
-import subprocess
-from pathlib import Path
-
-import typer
-from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
-
-from fgeo.constants import FGEO_HOME, FCONTEXT_DIR_NAME
-from fgeo.config import load_config, save_config
-
-console = Console()
-
-SUPPORTED_AGENTS = ["copilot", "cursor", "claude", "trae", "opencode"]
-
-# The instruction content that tells AI what fgeo can do
-FGEO_SKILL_INSTRUCTION = """---
+---
 name: 'fgeo'
 description: 'This workspace uses fgeo CLI for Generative Engine Optimization. Activate when user mentions 内容创作/GEO/SEO/gotomarket/宣传/推广/publish. Guides GTM lifecycle: project → goal → plan → platform → content.'
 applyTo: '**'
@@ -91,40 +70,15 @@ This check is triggered by the AI, NOT by `fgeo enable` or any CLI command. `fge
 
 **Trigger**: User expresses any content creation need (写文章, 宣传, 发内容, etc.)
 
-### ⛔ HARD GATE 1 — Brand must exist before any content work
+**Brand check** — run silently before starting any GTM workflow:
+- `fgeo brand show` — is brand profile set up?
+  - **Empty**: Propose building it with user (作者画像, 写作风格, 价值主张). Interview user, analyze their past writing if available, recommend structure, then `fgeo brand set <field> <value>` after confirmation.
+  - **Exists**: Load silently and apply to all content co-creation. Do NOT mention it to the user unless they ask.
 
-Run `fgeo brand show` silently.
-- **Empty** → **STOP. Do NOT proceed to outlines, drafts, topic suggestions, or file analysis.**
-  - Ask the four questions as a **plain chat message** — do NOT use any structured question tool, widget, or form UI. Write them as normal prose so the user can reply freely in the chat input box.
-  - Detect the user’s language and ask in that same language:
-    1. How do you introduce yourself? (name, role, or creator persona)
-    2. What is your content positioning — who is your target audience?
-    3. What tone or feeling should your writing convey? (style keywords)
-    4. What are your core topic domains?
-  - **STOP. End your response here. Wait for the user to reply in the chat. Do NOT analyze files or run any commands while waiting.**
-  - After user answers: optionally read 写作/examples/ to validate/enrich the profile.
-  - Propose a complete brand profile based on user’s answers. **Wait for user to confirm or adjust.**
-  - Only after confirmation: run `fgeo brand set <field> <value>` for each field.
-  - Then continue to Gate 2.
-- **Exists** → Load silently. Do NOT mention it to the user. Continue to Gate 2.
-
-### ⛔ HARD GATE 2 — Target platform must be known before any content work
-
-If the user has not specified which platform this content is for:
-- **STOP. Do NOT suggest outlines or topics yet.**
-- Ask as a **plain chat message** (do NOT use any structured question widget or form UI): which platform is this content for? (e.g. blog, devto, twitter, 公众号)
-- **End your response. Wait for the user to reply in the chat** before continuing.
-
-### ⛔ HARD GATE 3 — Platform style must exist before writing
-
-Run `fgeo style show <platform>` silently.
-- **Missing** → **STOP. Do NOT write any content for this platform yet.**
-  - Research best practices for this platform.
-  - Propose a style profile (desc, formula, tone, format). **Wait for user to confirm.**
-  - ⚠️ **CRITICAL: Style is PLATFORM-LEVEL, not topic-specific.** The formula must describe reusable structure and rhythm only (e.g. "hook → pain → solution → CTA"), NEVER include the current article's topic, technology name, or product name. A style must work for any article on that platform.
-  - Only after confirmation: run `fgeo style add <platform> --desc "..." --formula ".."`.
-  - Then continue to content co-creation.
-- **Exists** → Load silently. Use as writing guide. Continue.
+**Style check** — run silently before writing for any specific platform:
+- `fgeo style show <platform>` — does a writing style exist for this platform?
+  - **Exists**: Use as writing guide silently.
+  - **Missing**: Research best practices for this platform, propose a style profile to user, get confirmation, then `fgeo style add <platform> --desc "..." --formula "..."`. NEVER write platform content without a confirmed style.
 
 ## GTM Lifecycle (guide user through these phases, skip completed ones)
 
@@ -158,55 +112,42 @@ Run `fgeo style show <platform>` silently.
 
 ### Phase 5: Content Co-Creation (CORE — this is where most time is spent)
 
-Content co-creation is NOT “Agent writes everything”. It is a **turn-by-turn dialogue** where each step requires explicit user response before moving to the next.
-
-**⛔ HARD RULE: One step at a time. Never advance to the next step without the user’s reply.**
+Content co-creation is NOT "Agent writes everything". It's a structured dialogue where Agent helps the user understand the content system and co-create each piece with clear purpose.
 
 #### Step 1: Orient — Show Where We Are
-Before any content work, show the user the big picture:
-- Run `fgeo status <project>` to get current state (or note if no project exists yet)
-- Present a clear summary: “Your goal is X. Your plan has Y slots across Z platforms. Here’s what’s done and what’s needed:”
+Before any content work, ALWAYS show the user the big picture:
+- Run `fgeo status <project>` to get current state
+- Present a clear summary: "Your goal is X. Your plan has Y slots across Z platforms. Here's what's done and what's needed:"
 - Highlight the **biggest gap** — which platform/direction needs content most urgently
-- **STOP. Wait for user to acknowledge or redirect.**
+- Example: "Goal: 让所有人了解fcontext. Plan cold-start progress: twitter 2/12, devto 0/3, 公众号 1/4. **devto has zero articles — I suggest we start there.**"
 
 #### Step 2: Propose Topic — Tie Every Idea to Goal + Direction
-- Propose 2–3 specific topics for the gap identified
-- For each, explain: **what** (title/angle), **why** (how it serves the goal), **who** (target reader)
-- **STOP. Wait for user to pick one or counter-propose. Do NOT write outline yet.**
+Don't just suggest random topics. Connect each suggestion to WHY it serves the goal:
+- Propose 2-3 specific topics for the gap identified
+- For each topic, explain: **what** (title/angle), **why** (how it serves the goal), **who** (target reader on this platform)
+- Example: "For devto/tutorial direction, I suggest: 1) 'How fcontext solves the AI context loss problem' — this is your core value prop, devto readers are tool-evaluators who need to understand the problem first. 2) 'Building an AI-native CLI with Python + SQLite' — architecture deep-dive, showcases technical credibility."
+- **Wait** for user to pick or counter-propose
 
 #### Step 3: Outline First — Never Write the Full Piece Directly
 After user picks a topic:
 - Read `.fcontext/_README.md` and `_cache/` to understand the product deeply
-- Run `fgeo style show <platform>` to load platform writing style (triggers Gate 3 if missing)
-- Present a **structured outline** (5–8 key points) following the platform style formula
-- **STOP. Wait for user to approve or adjust the outline. Do NOT draft yet.**
+- Run `fgeo style show <platform>` to load platform writing style (triggers style check if missing)
+- Present a **structured outline** (5-8 key points) following the platform style formula
+- **Wait** for user to adjust the outline
 
 #### Step 4: Draft Together
-Only after outline is explicitly confirmed by user:
+Once outline is confirmed:
 - Write the full draft following the approved outline
-- Preserve the user’s voice — reference their style from existing files in `写作/examples/`
-- Mark places where user input is needed: “[YOUR EXPERIENCE: ...]”
-- **STOP. Ask: “Does this capture what you want to say? What should I adjust?” Wait for response.**
+- Preserve the user's voice — if user has written content before in this workspace, reference their style from existing files
+- Mark places where user input is needed: "[YOUR EXPERIENCE: describe what happened when you first used fcontext]"
+- After draft, ask: "Does this capture what you want to say? What should I adjust?"
 
-#### Step 5: Save, Review, then Register
-After user confirms the draft is final:
-
-**5a — Determine save location (plain chat message only, NO structured widget):**
-- If the user has already specified a directory → save there directly.
-- If no directory was specified → ask in plain chat: "Where should I save this? (default: `.fcontext/_topics/<title>.md`)"
-- **STOP. Wait for user's reply before saving.**
-- If user says "default" or gives no answer → save to `.fcontext/_topics/<slug>.md`.
-
-**5b — Save & show for review:**
-- Write the file to the chosen path.
-- Tell the user the file path and ask: "Please review the saved file. Let me know when you're happy with it, and I'll register it to fgeo."
-- **STOP. Do NOT register to fgeo yet. Wait for explicit user approval.**
-
-**5c — Register only after approval:**
-- Only after user says it looks good → run:
-  `fgeo content register <file> --project <p> --platform <pl> --direction <d> --type <t> --status draft`
-- Run `fgeo status <project>` and show updated progress.
-- Suggest next: “devto now 1/3. Want to continue with the next article?”
+#### Step 5: Register & Show Progress
+After content is finalized:
+- Save the content file in the workspace
+- Register with FULL associations: `fgeo content register <file> --project <p> --platform <pl> --direction <d> --type <t> --status draft`
+- Run `fgeo status <project>` and show updated progress
+- Proactively suggest next: "devto now 1/3. Want to continue with the next tutorial, or switch to twitter for some quick wins?"
 
 ### Phase 6: Progress Monitoring
 - `fgeo status <project>` — full dashboard
@@ -234,19 +175,6 @@ If content exists but no platform has been created for it:
 - Propose creating the platform first (Phase 3)
 - Then register content with proper associations
 - NEVER register content with missing platform/direction just to "get it tracked"
-
-## ⛔ Anti-Patterns (NEVER do these)
-
-These are common agent failures that violate the workflow:
-
-1. **Skipping brand check** — User says “写一篇文章”, agent jumps straight to outline. WRONG. Check brand first.
-2. **Skipping platform question** — User doesn’t specify platform, agent assumes and proceeds. WRONG. Ask explicitly.
-3. **Skipping style check** — No style exists for the platform, agent writes anyway. WRONG. Establish style first.
-4. **Outline without confirmation** — Agent proposes outline AND says “确认后我来写完整版” in the same message. WRONG. One step, then stop.
-5. **Draft without outline approval** — Agent writes full draft before user approves the structure. WRONG.
-6. **Zero-interaction content delivery** — Agent produces the entire article start-to-finish without a single user reply. This is the worst failure mode.
-7. **File analysis as brand substitute** — Brand is empty, but instead of asking the user questions, Agent reads past writing samples and infers a brand profile. WRONG. File analysis is a supplement AFTER the user answers the 4 questions, never a replacement.
-8. **Save-and-register in one shot** — After draft is confirmed, Agent immediately saves AND registers to fgeo without asking where to save or waiting for user review. WRONG. Always: ask save location (plain chat) → save → wait for review → register only after approval.
 
 ## Workflow Rules
 
@@ -318,8 +246,8 @@ fgeo goal set <goal-id> <field> <value>
 # Platform
 fgeo platform add <project> <name> [--directions "d1,d2"] [--pace "3/周"]
 fgeo platform list <project>
-fgeo platform show <project> <name>          # shows publish_url, content stats
-fgeo platform set <project> <name> <field> <value>  # fields: directions, pace, status, publish_url, last_published_at
+fgeo platform show <project> <name>
+fgeo platform set <platform-id> <field> <value>
 
 # Plan
 fgeo plan create <project> <name> [--strategy] [--goal <goal-id>]
@@ -360,125 +288,3 @@ fgeo style set <platform> <field> <value>
 fgeo init
 fgeo enable <agent>   # registers skill only — no interactive brand check
 ```
-"""
-
-
-def _check_fcontext() -> bool:
-    """Check if fcontext CLI is available."""
-    return shutil.which("fcontext") is not None
-
-
-def _check_fcontext_initialized(workspace: Path) -> bool:
-    """Check if fcontext is initialized in the current workspace."""
-    return (workspace / FCONTEXT_DIR_NAME).is_dir()
-
-
-def _init_fcontext(workspace: Path) -> bool:
-    """Initialize fcontext in the workspace if not already done."""
-    try:
-        result = subprocess.run(["fcontext", "init"], cwd=str(workspace), capture_output=True, text=True)
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def _enable_fcontext_agent(agent: str, workspace: Path) -> bool:
-    """Enable the specified agent in fcontext."""
-    try:
-        result = subprocess.run(
-            ["fcontext", "enable", agent], cwd=str(workspace), capture_output=True, text=True
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-def _write_fgeo_skill_instruction(agent: str, workspace: Path) -> Path | None:
-    """Write fgeo skill instruction file for the AI agent."""
-    instructions_dir = workspace / ".github" / "instructions"
-    instructions_dir.mkdir(parents=True, exist_ok=True)
-    skill_file = instructions_dir / "fgeo.instructions.md"
-    skill_file.write_text(FGEO_SKILL_INSTRUCTION)
-    return skill_file
-
-
-def enable(agent: str = typer.Argument(help="Agent to enable: copilot, cursor, claude, trae, opencode, or 'list'")) -> None:
-    """Enable AI agent integration — sets up fcontext dependency and fgeo skill instructions."""
-
-    # Handle 'list' to show status
-    if agent == "list":
-        _show_status()
-        return
-
-    if agent not in SUPPORTED_AGENTS:
-        console.print(f"[red]Unknown agent: {agent}[/red]")
-        console.print(f"Supported: {', '.join(SUPPORTED_AGENTS)}")
-        raise typer.Exit(1)
-
-    workspace = Path.cwd()
-    console.print(f"[bold]Enabling [cyan]{agent}[/cyan] for workspace: {workspace}[/bold]\n")
-
-    # Step 1: Check fcontext
-    if not _check_fcontext():
-        console.print("[red]✗[/red] fcontext CLI not found.")
-        console.print("  Install: [cyan]pip install fcontext[/cyan]")
-        raise typer.Exit(1)
-    console.print("[green]✓[/green] fcontext CLI found")
-
-    # Step 2: Initialize fcontext if needed
-    if not _check_fcontext_initialized(workspace):
-        console.print("[yellow]…[/yellow] fcontext not initialized, running [cyan]fcontext init[/cyan]...")
-        if _init_fcontext(workspace):
-            console.print("[green]✓[/green] fcontext initialized")
-        else:
-            console.print("[red]✗[/red] failed to initialize fcontext")
-            raise typer.Exit(1)
-    else:
-        console.print("[green]✓[/green] fcontext already initialized")
-
-    # Step 3: Enable agent in fcontext
-    console.print(f"[yellow]…[/yellow] enabling [cyan]{agent}[/cyan] in fcontext...")
-    if _enable_fcontext_agent(agent, workspace):
-        console.print(f"[green]✓[/green] fcontext agent [cyan]{agent}[/cyan] enabled")
-    else:
-        console.print(f"[yellow]⚠[/yellow] fcontext enable {agent} returned non-zero (may already be enabled)")
-
-    # Step 4: Write fgeo skill instruction
-    skill_file = _write_fgeo_skill_instruction(agent, workspace)
-    if skill_file:
-        console.print(f"[green]✓[/green] fgeo skill instruction written to {skill_file.relative_to(workspace)}")
-
-    # Step 5: Update global config
-    config = load_config()
-    if agent not in config.get("skills", []):
-        config.setdefault("skills", []).append(agent)
-        save_config(config)
-    console.print(f"[green]✓[/green] skill [cyan]{agent}[/cyan] registered in ~/.fgeo/config.yaml")
-
-    console.print()
-    console.print(
-        Panel.fit(
-            f"[bold green]Agent '{agent}' enabled![/bold green]\n\n"
-            "Your AI assistant now understands fgeo commands.\n"
-            "It can help you register, optimize, and distribute content.\n\n"
-            "Try: [bold]fgeo content register <your-article.md>[/bold]",
-            title="🤖 fgeo × fcontext",
-            border_style="green",
-        )
-    )
-
-
-def _show_status() -> None:
-    """Show which agents are enabled."""
-    config = load_config()
-    skills = config.get("skills", [])
-
-    table = Table(title="fgeo Agent Skills")
-    table.add_column("Agent", style="cyan")
-    table.add_column("Status", style="green")
-
-    for agent in SUPPORTED_AGENTS:
-        status = "[green]enabled[/green]" if agent in skills else "[dim]—[/dim]"
-        table.add_row(agent, status)
-
-    console.print(table)

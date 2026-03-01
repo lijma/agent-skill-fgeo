@@ -24,7 +24,7 @@ class TestVersion:
     def test_version(self, fgeo_home: Path):
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert "0.2.0" in result.output
+        assert "0.4.0" in result.output
 
     def test_help(self, fgeo_home: Path):
         result = runner.invoke(app, ["--help"])
@@ -684,3 +684,706 @@ class TestEdgeCases:
         result = runner.invoke(app, ["platform", "show", "fcontext", "devto"])
         assert result.exit_code == 0
         assert "Recent" in result.output
+
+
+class TestBrandCommands:
+    def test_brand_show_empty(self, fgeo_home):
+        result = runner.invoke(app, ["brand", "show"])
+        assert result.exit_code == 0
+        assert "not set up" in result.output
+
+    def test_brand_set_name(self, fgeo_home):
+        result = runner.invoke(app, ["brand", "set", "name", "Marvin Ma"])
+        assert result.exit_code == 0
+        assert "name" in result.output
+        assert "Marvin Ma" in result.output
+
+    def test_brand_set_shows_in_show(self, fgeo_home):
+        runner.invoke(app, ["brand", "set", "name", "Marvin Ma"])
+        runner.invoke(app, ["brand", "set", "positioning", "AI工具布道者"])
+        result = runner.invoke(app, ["brand", "show"])
+        assert result.exit_code == 0
+        assert "Marvin Ma" in result.output
+        assert "AI工具布道者" in result.output
+
+    def test_brand_set_invalid_field(self, fgeo_home):
+        result = runner.invoke(app, ["brand", "set", "nonexistent", "value"])
+        assert result.exit_code == 1
+        assert "Unknown field" in result.output
+
+    def test_brand_set_db_failure(self, fgeo_home, monkeypatch):
+        from fgeo.database import Database
+        monkeypatch.setattr(Database, "set_brand", lambda self, f, v: None)
+        result = runner.invoke(app, ["brand", "set", "name", "Marvin"])
+        assert result.exit_code == 1
+        assert "Failed" in result.output
+
+    def test_brand_set_all_fields(self, fgeo_home):
+        fields = [("name", "Marvin"), ("positioning", "P"), ("voice", "V"), ("core_values", "Va"), ("topics", "T")]
+        for field, value in fields:
+            result = runner.invoke(app, ["brand", "set", field, value])
+            assert result.exit_code == 0
+        result = runner.invoke(app, ["brand", "show"])
+        assert result.exit_code == 0
+        assert "Marvin" in result.output
+
+    def test_brand_init(self, fgeo_home):
+        result = runner.invoke(app, ["brand", "init"])
+        assert result.exit_code == 0
+        assert "brand set" in result.output
+
+    def test_version_includes_brand_style(self, fgeo_home):
+        result = runner.invoke(app, ["--help"])
+        assert "brand" in result.output
+        assert "style" in result.output
+
+
+class TestStyleCommands:
+    def test_style_list_empty(self, fgeo_home):
+        result = runner.invoke(app, ["style", "list"])
+        assert result.exit_code == 0
+        assert "No styles" in result.output
+
+    def test_style_add(self, fgeo_home):
+        result = runner.invoke(app, ["style", "add", "twitter",
+                                     "--desc", "Build-in-public",
+                                     "--formula", "hook→insight→CTA"])
+        assert result.exit_code == 0
+        assert "twitter" in result.output
+
+    def test_style_add_duplicate(self, fgeo_home):
+        runner.invoke(app, ["style", "add", "twitter"])
+        result = runner.invoke(app, ["style", "add", "twitter"])
+        assert result.exit_code == 1
+        assert "already exists" in result.output
+
+    def test_style_add_alias(self, fgeo_home):
+        result = runner.invoke(app, ["style", "add", "x", "--desc", "Twitter alias"])
+        assert result.exit_code == 0
+        assert "twitter" in result.output
+
+    def test_style_show(self, fgeo_home):
+        runner.invoke(app, ["style", "add", "devto", "--desc", "Dev audience", "--tone", "technical"])
+        result = runner.invoke(app, ["style", "show", "devto"])
+        assert result.exit_code == 0
+        assert "Dev audience" in result.output
+        assert "technical" in result.output
+
+    def test_style_show_not_found(self, fgeo_home):
+        result = runner.invoke(app, ["style", "show", "nonexistent"])
+        assert result.exit_code == 0
+        assert "No writing style" in result.output
+
+    def test_style_list(self, fgeo_home):
+        runner.invoke(app, ["style", "add", "twitter"])
+        runner.invoke(app, ["style", "add", "devto"])
+        result = runner.invoke(app, ["style", "list"])
+        assert result.exit_code == 0
+        assert "twitter" in result.output
+        assert "devto" in result.output
+
+    def test_style_set(self, fgeo_home):
+        runner.invoke(app, ["style", "add", "twitter"])
+        result = runner.invoke(app, ["style", "set", "twitter", "formula", "hook→CTA"])
+        assert result.exit_code == 0
+        assert "formula" in result.output
+        assert "hook→CTA" in result.output
+
+    def test_style_set_invalid_field(self, fgeo_home):
+        runner.invoke(app, ["style", "add", "twitter"])
+        result = runner.invoke(app, ["style", "set", "twitter", "nonexistent", "v"])
+        assert result.exit_code == 1
+        assert "Unknown field" in result.output
+
+    def test_style_set_not_found(self, fgeo_home):
+        result = runner.invoke(app, ["style", "set", "nonexistent", "desc", "v"])
+        assert result.exit_code == 1
+
+    def test_style_set_via_alias(self, fgeo_home):
+        runner.invoke(app, ["style", "add", "x"])
+        result = runner.invoke(app, ["style", "set", "twitter", "tone", "punchy"])
+        assert result.exit_code == 0
+        assert "punchy" in result.output
+
+
+class TestPublishCommands:
+    """Tests for fgeo publish content / publish list."""
+
+    def _register_blog_content(self, fgeo_home: Path, tmp_path: Path, status: str = "draft") -> tuple[str, Path]:
+        """Helper: create a workspace with .git, write a markdown file, register it, return (content_id, src_path)."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".git").mkdir()
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "blog"])
+        src = ws / "my-article.md"
+        src.write_text("# Hello Blog\n\nContent here.\n")
+        reg_result = runner.invoke(app, [
+            "content", "register", str(src),
+            "--project", "myproj",
+            "--platform", "blog",
+            "--direction", "tutorial",
+            "--status", status,
+        ])
+        content_id = _extract_id(reg_result.output, "cont")
+        return content_id, src
+
+    def test_publish_list_empty(self, fgeo_home: Path):
+        result = runner.invoke(app, ["publish", "list"])
+        assert result.exit_code == 0
+        assert "No content" in result.output
+
+    def test_publish_list_shows_drafts(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        result = runner.invoke(app, ["publish", "list"])
+        assert result.exit_code == 0
+        assert "my-article" in result.output
+
+    def test_publish_list_filter_by_project(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        result = runner.invoke(app, ["publish", "list", "--project", "myproj"])
+        assert result.exit_code == 0
+        assert "my-article" in result.output
+
+    def test_publish_list_filter_no_match(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        result = runner.invoke(app, ["publish", "list", "--status", "published"])
+        assert result.exit_code == 0
+        assert "No content" in result.output
+
+    def test_publish_content_not_found(self, fgeo_home: Path):
+        result = runner.invoke(app, ["publish", "content", "cont-doesnotexist"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_content_already_published(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path, status="published")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "Already published" in result.output
+
+    def test_publish_content_blog_no_source(self, fgeo_home: Path, tmp_path: Path):
+        # Register with a real file, then clear source_path to simulate missing path record
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".git").mkdir()
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "blog"])
+        src = ws / "article.md"
+        src.write_text("# Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "blog"])
+        content_id = _extract_id(reg.output, "cont")
+        # Clear source_path
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        result = runner.invoke(app, ["publish", "content", content_id,
+                                     "--blog-dir", str(posts_dir)])
+        assert result.exit_code == 1
+        assert "No source file" in result.output
+
+    def test_publish_content_blog_success(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        result = runner.invoke(app, ["publish", "content", content_id, "--blog-dir", str(posts_dir)])
+        assert result.exit_code == 0
+        assert "Published to blog" in result.output
+        # File should exist in posts_dir with date prefix
+        copied = list(posts_dir.glob("*my-article.md"))
+        assert len(copied) == 1
+        assert copied[0].read_text() == src.read_text()
+
+    def test_publish_content_blog_status_updated(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        runner.invoke(app, ["publish", "content", content_id, "--blog-dir", str(posts_dir)])
+        # After publish, listing published should show it
+        result = runner.invoke(app, ["publish", "list", "--status", "published"])
+        assert result.exit_code == 0
+        assert "my-article" in result.output
+
+    def test_publish_content_blog_dest_exists_no_force(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        # Pre-create destination
+        import re as _re
+        from datetime import datetime
+        date_now = datetime.now().strftime("%Y-%m-%d")
+        (posts_dir / f"{date_now}-my-article.md").write_text("old content")
+        result = runner.invoke(app, ["publish", "content", content_id, "--blog-dir", str(posts_dir)])
+        assert result.exit_code == 1
+        assert "already exists" in result.output.lower()
+
+    def test_publish_content_blog_dest_exists_force(self, fgeo_home: Path, tmp_path: Path):
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        from datetime import datetime
+        date_now = datetime.now().strftime("%Y-%m-%d")
+        (posts_dir / f"{date_now}-my-article.md").write_text("old content")
+        result = runner.invoke(app, ["publish", "content", content_id,
+                                     "--blog-dir", str(posts_dir), "--force"])
+        assert result.exit_code == 0
+        assert "Published to blog" in result.output
+        copied = list(posts_dir.glob("*my-article.md"))
+        assert copied[0].read_text() == src.read_text()
+
+    def test_publish_content_blog_no_workspace_no_blogdir(self, fgeo_home: Path, tmp_path: Path):
+        # Register file in a directory without .git/.fcontext so workspace=""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "blog"])
+        # tmp_path has no .git or .fcontext markers → workspace detection returns ""
+        no_ws_dir = tmp_path / "no_workspace"
+        no_ws_dir.mkdir()
+        src = no_ws_dir / "ghost.md"
+        src.write_text("# Ghost\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "blog"])
+        content_id = _extract_id(reg.output, "cont")
+        # Publish with no --blog-dir and no workspace — should fail
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "blog posts directory" in result.output.lower() or "blog-dir" in result.output
+
+    def test_publish_content_non_blog(self, fgeo_home: Path, tmp_path: Path):
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "twitter"])
+        src = tmp_path / "tweet.md"
+        src.write_text("# Tweet\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "twitter"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "published" in result.output.lower()
+        assert "manually" in result.output.lower() or "twitter" in result.output.lower()
+
+    def test_publish_content_non_blog_with_url(self, fgeo_home: Path, tmp_path: Path):
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto"])
+        src = tmp_path / "article.md"
+        src.write_text("# Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id,
+                                     "--url", "https://dev.to/myarticle"])
+        assert result.exit_code == 0
+        assert "https://dev.to/myarticle" in result.output
+
+    def test_publish_content_blog_filename_already_has_date_prefix(self, fgeo_home: Path, tmp_path: Path):
+        """Covers _with_date_prefix line: return filename when prefix already present."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / ".git").mkdir()
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "blog"])
+        # File already has YYYY-MM-DD- prefix → _with_date_prefix should return it unchanged
+        src = ws / "2025-12-25-xmas-post.md"
+        src.write_text("# Xmas\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "blog"])
+        content_id = _extract_id(reg.output, "cont")
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        result = runner.invoke(app, ["publish", "content", content_id, "--blog-dir", str(posts_dir)])
+        assert result.exit_code == 0
+        # Destination keeps the original prefix, not a doubled one
+        assert (posts_dir / "2025-12-25-xmas-post.md").exists()
+
+    def test_publish_content_no_platform_id(self, fgeo_home: Path, tmp_path: Path):
+        """Covers _resolve_platform_name early return when platform_id is absent."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        src = tmp_path / "threadless.md"
+        src.write_text("# Thread\n")
+        # Register WITHOUT --platform → platform_id stays NULL in DB
+        reg = runner.invoke(app, ["content", "register", str(src), "--project", "myproj"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "published" in result.output.lower()
+
+    def test_publish_content_blog_src_file_missing(self, fgeo_home: Path, tmp_path: Path):
+        """Covers src.exists() check: source_path recorded but file deleted before publish."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        src.unlink()  # delete the actual file after registration
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        result = runner.invoke(app, ["publish", "content", content_id, "--blog-dir", str(posts_dir)])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_content_blog_via_workspace(self, fgeo_home: Path, tmp_path: Path):
+        """Covers the `elif workspace` branch (no --blog-dir, workspace auto-detected)."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        # Publish without --blog-dir; workspace is set from registration → uses workspace/platforms/blog/docs/posts/
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "Published to blog" in result.output
+        ws = tmp_path / "ws"
+        posts_dir = ws / "platforms" / "blog" / "docs" / "posts"
+        copied = list(posts_dir.glob("*my-article.md"))
+        assert len(copied) == 1
+
+
+class TestPublishBlogGitFlow:
+    """Tests for the git-PR publish flow (blog platform with publish_url set)."""
+
+    REPO_URL = "https://github.com/user/blog.git"
+
+    def _register_blog_content(self, fgeo_home: Path, tmp_path: Path) -> tuple[str, Path]:
+        runner.invoke(app, ["project", "create", "gitproj"])
+        runner.invoke(app, ["platform", "add", "gitproj", "blog"])
+        src = tmp_path / "post.md"
+        src.write_text("# My Git Post\n\nContent.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "gitproj", "--platform", "blog"])
+        content_id = _extract_id(reg.output, "cont")
+        return content_id, src
+
+    def _mock_subprocess(self, monkeypatch):
+        """Mock subprocess.run: git clone creates repo_dir; all git cmds succeed; gh fails."""
+        import subprocess as _sp
+
+        def _run(cmd, cwd=None, **kwargs):
+            cmd_str = " ".join(str(c) for c in cmd)
+            if "clone" in cmd_str:
+                # Create the target dir so subsequent cwd-based calls have a real path
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+            if cmd[0] == "gh":
+                return _sp.CompletedProcess(cmd, 1, stdout="", stderr="gh: not configured")
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        # Only mock subprocess.run — _run_git calls it internally so line 51 is covered
+        monkeypatch.setattr("fgeo.commands.publish.subprocess.run", _run)
+        # gh is "installed" but will return non-zero (graceful failure)
+        monkeypatch.setattr("fgeo.commands.publish.shutil.which", lambda _: "/usr/bin/gh")
+
+    def test_platform_set_publish_url(self, fgeo_home: Path, tmp_path: Path):
+        """fgeo platform set stores publish_url on the platform record."""
+        runner.invoke(app, ["project", "create", "gitproj"])
+        runner.invoke(app, ["platform", "add", "gitproj", "blog"])
+        result = runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                                     "publish_url", self.REPO_URL])
+        assert result.exit_code == 0
+        # show command reflects the value
+        show = runner.invoke(app, ["platform", "show", "gitproj", "blog"])
+        assert self.REPO_URL in show.output
+
+    def test_publish_content_blog_no_publish_url_falls_back_to_local(
+        self, fgeo_home: Path, tmp_path: Path
+    ):
+        """Without publish_url, blog publish falls back to local copy flow."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        posts_dir = tmp_path / "posts"
+        posts_dir.mkdir()
+        result = runner.invoke(app, ["publish", "content", content_id,
+                                     "--blog-dir", str(posts_dir)])
+        assert result.exit_code == 0
+        assert "local" in result.output.lower()
+
+    def test_publish_content_blog_git_flow_creates_task(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """With publish_url set, publish triggers git flow and creates a ptask."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        # Redirect FGEO_HOME tasks to tmp_path so we don't pollute ~/.fgeo
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        self._mock_subprocess(monkeypatch)
+
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "PR ready" in result.output or "ptask" in result.output
+
+    def test_publish_task_list_shows_created_task(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """After git publish, fgeo publish task list shows the pr_open task."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        self._mock_subprocess(monkeypatch)
+
+        runner.invoke(app, ["publish", "content", content_id])
+
+        result = runner.invoke(app, ["publish", "task", "list"])
+        assert result.exit_code == 0
+        assert "pr_open" in result.output
+
+    def test_publish_task_list_empty(self, fgeo_home: Path):
+        result = runner.invoke(app, ["publish", "task", "list"])
+        assert result.exit_code == 0
+        assert "No publish tasks" in result.output
+
+    def test_publish_task_list_filter_by_status(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """Filter tasks by status=merged returns nothing when task is pr_open."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        self._mock_subprocess(monkeypatch)
+        runner.invoke(app, ["publish", "content", content_id])
+
+        result = runner.invoke(app, ["publish", "task", "list", "--status", "merged"])
+        assert "No publish tasks" in result.output
+
+    def test_publish_task_show(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """fgeo publish task show displays task details."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        self._mock_subprocess(monkeypatch)
+        pub = runner.invoke(app, ["publish", "content", content_id])
+
+        # Extract task ID from output
+        task_id = _extract_id(pub.output, "ptask")
+        result = runner.invoke(app, ["publish", "task", "show", task_id])
+        assert result.exit_code == 0
+        assert "pr_open" in result.output
+        assert task_id in result.output
+
+    def test_publish_task_show_not_found(self, fgeo_home: Path):
+        result = runner.invoke(app, ["publish", "task", "show", "ptask-doesnotexist"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_task_done_marks_content_published(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """fgeo publish task done → task=merged, content=published."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        self._mock_subprocess(monkeypatch)
+        pub = runner.invoke(app, ["publish", "content", content_id])
+        task_id = _extract_id(pub.output, "ptask")
+
+        done = runner.invoke(app, ["publish", "task", "done", task_id])
+        assert done.exit_code == 0
+        assert "merged" in done.output
+        assert "published" in done.output
+
+        # Content should now show as published
+        result = runner.invoke(app, ["publish", "list", "--status", "published"])
+        assert "post" in result.output
+
+    def test_publish_task_done_idempotent(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """Calling task done twice is safe."""
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        self._mock_subprocess(monkeypatch)
+        pub = runner.invoke(app, ["publish", "content", content_id])
+        task_id = _extract_id(pub.output, "ptask")
+
+        runner.invoke(app, ["publish", "task", "done", task_id])
+        second = runner.invoke(app, ["publish", "task", "done", task_id])
+        assert second.exit_code == 0
+        assert "already merged" in second.output.lower()
+
+    def test_publish_task_done_not_found(self, fgeo_home: Path):
+        result = runner.invoke(app, ["publish", "task", "done", "ptask-nope"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_content_blog_clone_failure(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """If git clone fails, publish exits with error."""
+        import subprocess as _sp
+
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _fail_clone(cmd, cwd=None, **kwargs):
+            if "clone" in cmd:
+                return _sp.CompletedProcess(cmd, 128, stdout="", stderr="fatal: repository not found")
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("fgeo.commands.publish.subprocess.run", _fail_clone)
+
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "clone" in result.output.lower() or "failed" in result.output.lower()
+
+    def test_publish_content_blog_push_failure(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """If git push fails, publish exits with error (covers push failure branch)."""
+        import subprocess as _sp
+
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _fail_push(cmd, cwd=None, **kwargs):
+            if "clone" in cmd:
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+                return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "push" in cmd:
+                return _sp.CompletedProcess(cmd, 1, stdout="", stderr="error: failed to push")
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("fgeo.commands.publish.subprocess.run", _fail_push)
+
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "push" in result.output.lower() or "failed" in result.output.lower()
+
+    def test_publish_content_blog_force_push(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """--force passes --force-with-lease to git push (covers non-fast-forward case)."""
+        import subprocess as _sp
+
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        monkeypatch.setattr("fgeo.commands.publish.shutil.which", lambda _: "/usr/bin/gh")
+
+        push_cmds: list[list[str]] = []
+
+        def _run(cmd, cwd=None, **kwargs):
+            if "clone" in cmd:
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+            if "push" in cmd:
+                push_cmds.append(list(cmd))
+            if cmd[0] == "gh":
+                return _sp.CompletedProcess(cmd, 1, stdout="", stderr="")
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("fgeo.commands.publish.subprocess.run", _run)
+
+        result = runner.invoke(app, ["publish", "content", content_id, "--force"])
+        assert result.exit_code == 0
+        assert any("--force-with-lease" in cmd for cmd in push_cmds)
+
+    def test_publish_content_blog_gh_not_installed(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """When gh is not installed, install instructions and a compare URL are shown."""
+        import subprocess as _sp
+
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        monkeypatch.setattr("fgeo.commands.publish.shutil.which", lambda _: None)
+
+        def _run(cmd, cwd=None, **kwargs):
+            if "clone" in cmd:
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("fgeo.commands.publish.subprocess.run", _run)
+
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "brew install gh" in result.output or "cli.github.com" in result.output
+        # Compare URL from REPO_URL (https://github.com/user/blog.git)
+        assert "github.com/user/blog/compare" in result.output
+        assert "?expand=1" in result.output
+        # Task is still created even without gh
+        task_list = runner.invoke(app, ["publish", "task", "list"])
+        assert "pr_open" in task_list.output
+
+    def test_publish_content_blog_gh_creates_pr_url(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """When gh pr create succeeds, PR URL appears in output."""
+        import subprocess as _sp
+        PR_URL = "https://github.com/user/blog/pull/42"
+
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        monkeypatch.setattr("fgeo.commands.publish.shutil.which", lambda _: "/usr/bin/gh")
+
+        def _gh_success(cmd, cwd=None, **kwargs):
+            if "clone" in cmd:
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+            if cmd[0] == "gh":
+                return _sp.CompletedProcess(cmd, 0, stdout=f"{PR_URL}\n", stderr="")
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("fgeo.commands.publish.subprocess.run", _gh_success)
+
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert PR_URL in result.output
+
+    def test_publish_task_done_with_pr_url_updates_content(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """task done when task has pr_url → updates content published_url (covers L370)."""
+        import subprocess as _sp
+        PR_URL = "https://github.com/user/blog/pull/99"
+
+        content_id, src = self._register_blog_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["platform", "set", "gitproj", "blog",
+                            "publish_url", self.REPO_URL])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        monkeypatch.setattr("fgeo.commands.publish.shutil.which", lambda _: "/usr/bin/gh")
+
+        def _gh_success(cmd, cwd=None, **kwargs):
+            if "clone" in cmd:
+                Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+            if cmd[0] == "gh":
+                return _sp.CompletedProcess(cmd, 0, stdout=f"{PR_URL}\n", stderr="")
+            return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("fgeo.commands.publish.subprocess.run", _gh_success)
+
+        pub = runner.invoke(app, ["publish", "content", content_id])
+        task_id = _extract_id(pub.output, "ptask")
+
+        done = runner.invoke(app, ["publish", "task", "done", task_id])
+        assert done.exit_code == 0
+        # Content show should have the PR URL recorded
+        show = runner.invoke(app, ["content", "show", content_id])
+        assert PR_URL in show.output
+
+
+class TestGitRemoteToWebUrl:
+    """Unit tests for the _git_remote_to_web_url helper."""
+
+    def test_https_with_git_suffix(self):
+        from fgeo.commands.publish import _git_remote_to_web_url
+        assert _git_remote_to_web_url("https://github.com/user/repo.git") == "https://github.com/user/repo"
+
+    def test_https_without_git_suffix(self):
+        from fgeo.commands.publish import _git_remote_to_web_url
+        assert _git_remote_to_web_url("https://github.com/user/repo") == "https://github.com/user/repo"
+
+    def test_ssh_format(self):
+        from fgeo.commands.publish import _git_remote_to_web_url
+        assert _git_remote_to_web_url("git@github.com:user/repo.git") == "https://github.com/user/repo"
+
+    def test_ssh_format_without_git_suffix(self):
+        from fgeo.commands.publish import _git_remote_to_web_url
+        assert _git_remote_to_web_url("git@github.com:user/repo") == "https://github.com/user/repo"
+
+
+
+

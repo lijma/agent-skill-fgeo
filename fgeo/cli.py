@@ -9,12 +9,15 @@ import typer
 from rich.console import Console
 
 from fgeo import __version__
+from fgeo.commands.brand import brand_app
 from fgeo.commands.content import content_app
 from fgeo.commands.project import project_app
 from fgeo.commands.goal import goal_app
 from fgeo.commands.platform import platform_app
 from fgeo.commands.plan import plan_app
+from fgeo.commands.publish import publish_app
 from fgeo.commands.status import status_command
+from fgeo.commands.style import style_app
 
 console = Console()
 
@@ -26,11 +29,14 @@ app = typer.Typer(
 )
 
 # Sub-command groups
+app.add_typer(brand_app, name="brand")
 app.add_typer(project_app, name="project")
 app.add_typer(goal_app, name="goal")
 app.add_typer(platform_app, name="platform")
 app.add_typer(plan_app, name="plan")
 app.add_typer(content_app, name="content")
+app.add_typer(publish_app, name="publish")
+app.add_typer(style_app, name="style")
 
 # Top-level commands
 app.command("status")(status_command)

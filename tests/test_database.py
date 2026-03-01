@@ -23,7 +23,7 @@ class TestSchemaInit:
 
     def test_schema_version(self, db: Database):
         row = db.conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
-        assert row["value"] == "0.2.0"
+        assert row["value"] == "0.4.0"
 
     def test_init_idempotent(self, db: Database):
         db.init_schema()
@@ -462,3 +462,229 @@ class TestHelpers:
         f = tmp_path / "orphan.md"
         f.write_text("test")
         assert Database._detect_workspace(f) is None
+
+
+class TestBrand:
+    def test_get_brand_empty(self, db: Database):
+        brand = db.get_brand()
+        assert brand["name"] == ""
+        assert brand["positioning"] == ""
+        assert brand["voice"] == ""
+        assert brand["core_values"] == ""
+        assert brand["topics"] == ""
+
+    def test_set_brand_creates_singleton(self, db: Database):
+        result = db.set_brand("name", "Marvin Ma")
+        assert result is not None
+        assert result["name"] == "Marvin Ma"
+
+    def test_set_brand_updates_field(self, db: Database):
+        db.set_brand("name", "Marvin Ma")
+        db.set_brand("positioning", "AI工具布道者")
+        brand = db.get_brand()
+        assert brand["name"] == "Marvin Ma"
+        assert brand["positioning"] == "AI工具布道者"
+
+    def test_set_brand_idempotent(self, db: Database):
+        db.set_brand("name", "Marvin Ma")
+        db.set_brand("name", "MarvinTalk")
+        brand = db.get_brand()
+        assert brand["name"] == "MarvinTalk"
+        # Only one singleton row exists
+        count = db.conn.execute("SELECT COUNT(*) FROM brand").fetchone()[0]
+        assert count == 1
+
+    def test_set_brand_invalid_field(self, db: Database):
+        result = db.set_brand("nonexistent", "value")
+        assert result is None
+
+    def test_set_brand_all_fields(self, db: Database):
+        fields = {"name": "Marvin", "positioning": "P", "voice": "V", "core_values": "Va", "topics": "T"}
+        for k, v in fields.items():
+            db.set_brand(k, v)
+        brand = db.get_brand()
+        for k, v in fields.items():
+            assert brand[k] == v
+
+
+class TestStyles:
+    def test_add_style(self, db: Database):
+        style = db.add_style("twitter", desc="Build-in-public", formula="hook→insight→CTA")
+        assert style["platform"] == "twitter"
+        assert style["desc"] == "Build-in-public"
+        assert style["formula"] == "hook→insight→CTA"
+
+    def test_add_style_duplicate_raises(self, db: Database):
+        db.add_style("twitter")
+        with pytest.raises(ValueError, match="already exists"):
+            db.add_style("twitter")
+
+    def test_add_style_alias_x(self, db: Database):
+        style = db.add_style("x", desc="Twitter via alias")
+        assert style["platform"] == "twitter"
+
+    def test_add_style_alias_wechat(self, db: Database):
+        style = db.add_style("wechat")
+        assert style["platform"] == "公众号"
+
+    def test_add_style_alias_bilibili(self, db: Database):
+        style = db.add_style("bilibili")
+        assert style["platform"] == "B站"
+
+    def test_get_style(self, db: Database):
+        db.add_style("devto", desc="Developer audience", formula="problem→solution→code")
+        style = db.get_style("devto")
+        assert style is not None
+        assert style["desc"] == "Developer audience"
+
+    def test_get_style_not_found(self, db: Database):
+        assert db.get_style("nonexistent") is None
+
+    def test_get_style_via_alias(self, db: Database):
+        db.add_style("公众号")
+        style = db.get_style("wechat")
+        assert style is not None
+        assert style["platform"] == "公众号"
+
+    def test_list_styles(self, db: Database):
+        db.add_style("twitter")
+        db.add_style("devto")
+        db.add_style("medium")
+        styles = db.list_styles()
+        assert len(styles) == 3
+        platforms = [s["platform"] for s in styles]
+        assert "twitter" in platforms
+        assert "devto" in platforms
+        assert "medium" in platforms
+
+    def test_list_styles_empty(self, db: Database):
+        assert db.list_styles() == []
+
+    def test_update_style(self, db: Database):
+        db.add_style("twitter", tone="casual")
+        result = db.update_style("twitter", "tone", "punchy and direct")
+        assert result is not None
+        assert result["tone"] == "punchy and direct"
+
+    def test_update_style_invalid_field(self, db: Database):
+        db.add_style("twitter")
+        assert db.update_style("twitter", "nonexistent", "value") is None
+
+    def test_update_style_not_found(self, db: Database):
+        assert db.update_style("nonexistent", "desc", "value") is None
+
+    def test_update_style_via_alias(self, db: Database):
+        db.add_style("twitter")
+        result = db.update_style("x", "formula", "hook→CTA")
+        assert result is not None
+        assert result["formula"] == "hook→CTA"
+
+    def test_schema_includes_brand_style_tables(self, db: Database):
+        tables = db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        names = [t["name"] for t in tables]
+        assert "brand" in names
+        assert "styles" in names
+
+    def test_schema_includes_publish_tasks_table(self, db: Database):
+        tables = db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        names = [t["name"] for t in tables]
+        assert "publish_tasks" in names
+
+    def test_platforms_has_publish_url_column(self, db: Database):
+        cols = [row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()]
+        assert "publish_url" in cols
+
+    def test_migration_adds_publish_url_to_old_schema(self, db: Database):
+        """Simulate upgrading from 0.3.0: drop publish_url column, re-run init_schema."""
+        # SQLite doesn't support DROP COLUMN before 3.35; recreate table without publish_url
+        db.conn.executescript("""
+            CREATE TABLE platforms_old AS SELECT id, project_id, name, directions, pace,
+                status, last_published_at, created_at, updated_at FROM platforms;
+            DROP TABLE platforms;
+            ALTER TABLE platforms_old RENAME TO platforms;
+        """)
+        # Verify column is gone
+        cols_before = {row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()}
+        assert "publish_url" not in cols_before
+        # Re-run migration
+        db.init_schema()
+        cols_after = {row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()}
+        assert "publish_url" in cols_after
+
+
+class TestPublishTasks:
+    """Tests for publish_task CRUD in Database."""
+
+    def _setup(self, db: Database):
+        """Create project + platform + content, return content_id."""
+        db.create_project("proj")
+        db.add_platform("proj", "blog")
+        content = db.register_content(title="Test Post", project_name="proj", platform_name="blog")
+        return content["id"]
+
+    def test_create_and_get_publish_task(self, db: Database):
+        content_id = self._setup(db)
+        task = db.create_publish_task(
+            task_id="ptask-abc12345",
+            content_id=content_id,
+            repo_url="https://github.com/u/blog.git",
+            branch="fgeo/test",
+            task_dir="/tmp/test",
+            pr_url="https://github.com/u/blog/pull/1",
+        )
+        assert task["id"] == "ptask-abc12345"
+        assert task["status"] == "pr_open"
+        assert task["pr_url"] == "https://github.com/u/blog/pull/1"
+
+        fetched = db.get_publish_task("ptask-abc12345")
+        assert fetched is not None
+        assert fetched["branch"] == "fgeo/test"
+
+    def test_get_publish_task_not_found(self, db: Database):
+        assert db.get_publish_task("ptask-nope") is None
+
+    def test_list_publish_tasks_empty(self, db: Database):
+        assert db.list_publish_tasks() == []
+
+    def test_list_publish_tasks_filter_status(self, db: Database):
+        content_id = self._setup(db)
+        db.create_publish_task("ptask-00000001", content_id, status="pr_open")
+        db.create_publish_task("ptask-00000002", content_id, status="merged")
+        pr_open = db.list_publish_tasks(status="pr_open")
+        assert len(pr_open) == 1
+        assert pr_open[0]["id"] == "ptask-00000001"
+
+    def test_list_publish_tasks_filter_content_id(self, db: Database):
+        """Covers the content_id filter branch (DB lines 745-746)."""
+        content_id = self._setup(db)
+        db.create_publish_task("ptask-00000003", content_id)
+        result = db.list_publish_tasks(content_id=content_id)
+        assert len(result) == 1
+        assert result[0]["id"] == "ptask-00000003"
+
+        # Filter by a different content_id returns nothing
+        empty = db.list_publish_tasks(content_id="cont-doesnotexist")
+        assert empty == []
+
+    def test_update_publish_task(self, db: Database):
+        content_id = self._setup(db)
+        db.create_publish_task("ptask-00000004", content_id)
+        result = db.update_publish_task("ptask-00000004", "status", "merged")
+        assert result is not None
+        assert result["status"] == "merged"
+
+    def test_update_publish_task_invalid_field(self, db: Database):
+        """Covers early-return when field not in allowed (DB line 755)."""
+        content_id = self._setup(db)
+        db.create_publish_task("ptask-00000005", content_id)
+        result = db.update_publish_task("ptask-00000005", "nonexistent_field", "val")
+        assert result is None
+
+    def test_update_publish_task_not_found(self, db: Database):
+        """Covers early-return when task doesn't exist (DB line 758)."""
+        result = db.update_publish_task("ptask-nope", "status", "merged")
+        assert result is None
