@@ -55,7 +55,9 @@ def status_command(
         console.print("[bold]📋 Plans[/bold]")
         for p in data["plans"]:
             icon = {"active": "●", "completed": "✓", "draft": "○", "archived": "▪"}.get(p["status"], "?")
-            console.print(f"  {icon} [bold]{p['name']}[/bold] [{p['status']}]  {p['strategy'][:50]}")
+            console.print(f"  {icon} [bold]{p['name']}[/bold] \\[{p['status']}]  {p['strategy'][:50]}")
+            if p["status"] == "archived":
+                continue
             if p["assignments"]:
                 for a in p["assignments"]:
                     pct = f"{a['done']}/{a['target']}" if a["target"] > 0 else str(a["done"])

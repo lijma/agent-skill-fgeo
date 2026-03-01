@@ -303,6 +303,7 @@ fgeo plan list <project>
 fgeo plan show <project> <name>
 fgeo plan assign <project> <plan> <platform> [--direction] [--target N]
 fgeo plan set <project> <name> <field> <value>
+fgeo plan remove <project> <name> [--force]
 
 # Content
 fgeo content register <file> [--project] [--platform] [--plan] [--direction] [--tags] [--desc] [--type] [--status]

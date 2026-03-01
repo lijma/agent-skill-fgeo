@@ -402,6 +402,14 @@ class Database:
         self.conn.commit()
         return self._get_row("plans", plan["id"])
 
+    def remove_plan(self, project_name: str, plan_name: str) -> bool:
+        plan = self.get_plan(project_name, plan_name)
+        if not plan:
+            return False
+        self.conn.execute("DELETE FROM plans WHERE id=?", (plan["id"],))
+        self.conn.commit()
+        return True
+
     def assign_plan_platform(
         self, project_name: str, plan_name: str, platform_name: str, direction: str = "", target: int = 0
     ) -> dict[str, Any] | None:

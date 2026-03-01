@@ -330,6 +330,19 @@ class TestPlans:
         db.create_project("fcontext")
         assert db.list_plan_platforms("fcontext", "nonexistent") == []
 
+    def test_remove_plan(self, db: Database):
+        db.create_project("fcontext")
+        db.create_plan("fcontext", "cold-start")
+        assert db.remove_plan("fcontext", "cold-start") is True
+        assert db.get_plan("fcontext", "cold-start") is None
+
+    def test_remove_plan_not_found(self, db: Database):
+        db.create_project("fcontext")
+        assert db.remove_plan("fcontext", "nonexistent") is False
+
+    def test_remove_plan_project_not_found(self, db: Database):
+        assert db.remove_plan("nonexistent", "cold-start") is False
+
 
 class TestContents:
     def test_register_content(self, db: Database):

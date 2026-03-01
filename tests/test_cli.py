@@ -280,6 +280,26 @@ class TestPlanCommands:
         assert result.exit_code == 0
         assert "completed" in result.output
 
+    def test_plan_remove_force(self, fgeo_home: Path):
+        runner.invoke(app, ["project", "create", "fcontext"])
+        runner.invoke(app, ["plan", "create", "fcontext", "cold-start"])
+        result = runner.invoke(app, ["plan", "remove", "fcontext", "cold-start", "--force"])
+        assert result.exit_code == 0
+        assert "removed" in result.output
+
+    def test_plan_remove_not_found(self, fgeo_home: Path):
+        runner.invoke(app, ["project", "create", "fcontext"])
+        result = runner.invoke(app, ["plan", "remove", "fcontext", "nonexistent", "--force"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_plan_remove_aborted(self, fgeo_home: Path):
+        runner.invoke(app, ["project", "create", "fcontext"])
+        runner.invoke(app, ["plan", "create", "fcontext", "cold-start"])
+        result = runner.invoke(app, ["plan", "remove", "fcontext", "cold-start"], input="n\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+
 
 class TestContentCommands:
     def test_content_register_file(self, fgeo_home: Path, sample_workspace: Path):
@@ -401,6 +421,15 @@ class TestStatusCommand:
         self._seed_project(fgeo_home)
         result = runner.invoke(app, ["status", "fcontext", "--platform", "nonexistent"])
         assert result.exit_code == 1
+
+    def test_status_archived_plan_no_assignments(self, fgeo_home: Path):
+        self._seed_project(fgeo_home)
+        runner.invoke(app, ["plan", "set", "fcontext", "cold-start", "status", "archived"])
+        result = runner.invoke(app, ["status", "fcontext"])
+        assert result.exit_code == 0
+        assert "archived" in result.output
+        # archived plans do not expand assignment rows (format: "platform/direction: done/target")
+        assert "twitter/bip:" not in result.output
 
 
 class TestInitCommand:
