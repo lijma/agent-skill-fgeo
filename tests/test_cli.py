@@ -204,6 +204,26 @@ class TestPlatformCommands:
         assert result.exit_code == 0
         assert "5/周" in result.output
 
+    def test_platform_remove_force(self, fgeo_home: Path):
+        runner.invoke(app, ["project", "create", "fcontext"])
+        runner.invoke(app, ["platform", "add", "fcontext", "twitter"])
+        result = runner.invoke(app, ["platform", "remove", "fcontext", "twitter", "--force"])
+        assert result.exit_code == 0
+        assert "removed" in result.output
+
+    def test_platform_remove_not_found(self, fgeo_home: Path):
+        runner.invoke(app, ["project", "create", "fcontext"])
+        result = runner.invoke(app, ["platform", "remove", "fcontext", "nonexistent", "--force"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_platform_remove_aborted(self, fgeo_home: Path):
+        runner.invoke(app, ["project", "create", "fcontext"])
+        runner.invoke(app, ["platform", "add", "fcontext", "twitter"])
+        result = runner.invoke(app, ["platform", "remove", "fcontext", "twitter"], input="n\n")
+        assert result.exit_code == 0
+        assert "Aborted" in result.output
+
 
 class TestPlanCommands:
     def test_plan_create(self, fgeo_home: Path):
