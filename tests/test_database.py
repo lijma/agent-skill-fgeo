@@ -219,6 +219,19 @@ class TestPlatforms:
     def test_get_platform_project_not_found(self, db: Database):
         assert db.get_platform("nonexistent", "twitter") is None
 
+    def test_remove_platform(self, db: Database):
+        db.create_project("fcontext")
+        db.add_platform("fcontext", "twitter")
+        assert db.remove_platform("fcontext", "twitter") is True
+        assert db.get_platform("fcontext", "twitter") is None
+
+    def test_remove_platform_not_found(self, db: Database):
+        db.create_project("fcontext")
+        assert db.remove_platform("fcontext", "nonexistent") is False
+
+    def test_remove_platform_project_not_found(self, db: Database):
+        assert db.remove_platform("nonexistent", "twitter") is False
+
 
 class TestPlans:
     def test_create_plan(self, db: Database):

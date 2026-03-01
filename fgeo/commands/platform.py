@@ -117,6 +117,30 @@ def show(
     console.print(Panel.fit(info, title=f"📡 {name} — {project}", border_style="blue"))
 
 
+@platform_app.command("remove")
+def remove(
+    project: str = typer.Argument(help="Project name"),
+    name: str = typer.Argument(help="Platform name"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+) -> None:
+    """Remove a platform from a project."""
+    if not force:
+        confirm = typer.confirm(f"Remove platform '{name}' from '{project}'? This will NOT delete associated content.")
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(0)
+
+    db = get_db()
+    removed = db.remove_platform(project, name)
+    db.close()
+
+    if not removed:
+        console.print(f"[red]Platform '{name}' not found for project '{project}'.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]✓[/green] Platform [bold]{name}[/bold] removed from {project}.")
+
+
 @platform_app.command("set")
 def set_field(
     project: str = typer.Argument(help="Project name"),

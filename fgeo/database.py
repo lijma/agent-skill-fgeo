@@ -337,6 +337,14 @@ class Database:
         self.conn.commit()
         return self._get_row("platforms", plat["id"])
 
+    def remove_platform(self, project_name: str, platform_name: str) -> bool:
+        plat = self.get_platform(project_name, platform_name)
+        if not plat:
+            return False
+        self.conn.execute("DELETE FROM platforms WHERE id=?", (plat["id"],))
+        self.conn.commit()
+        return True
+
     # ── Plans ─────────────────────────────────────────────────────
 
     def create_plan(

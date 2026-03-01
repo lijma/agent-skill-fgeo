@@ -364,6 +364,7 @@ fgeo platform add <project> <name> [--directions "d1,d2"] [--pace "3/周"]
 fgeo platform list <project>
 fgeo platform show <project> <name>          # shows publish_url, bsky_handle, app password (masked), content stats
 fgeo platform set <project> <name> <field> <value>  # fields: directions, pace, status, publish_url, bsky_handle, platform_secret, last_published_at
+fgeo platform remove <project> <name> [--force]     # remove platform (content is NOT deleted)
 
 # Plan
 fgeo plan create <project> <name> [--strategy] [--goal <goal-id>]
