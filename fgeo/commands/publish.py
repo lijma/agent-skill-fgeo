@@ -24,6 +24,7 @@ publish_app.add_typer(task_app, name="task")
 
 # Platform names with built-in publishing support
 BLOG_PLATFORM = "blog"
+BSKY_PLATFORM = "bluesky"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -69,6 +70,124 @@ def _git_remote_to_web_url(remote: str) -> str:
     if remote.endswith(".git"):
         return remote[:-4]
     return remote
+
+
+# ── Bluesky flow ──────────────────────────────────────────────────────────────
+
+def _extract_bsky_text(src: Path, max_chars: int = 270) -> str:
+    """Extract a clean text snippet from a Markdown article for Bluesky posting.
+
+    Strips YAML frontmatter and Markdown formatting. Prefers the '太长不读' paragraph.
+    """
+    text = src.read_text(encoding="utf-8")
+
+    # Strip YAML frontmatter (--- ... ---)
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        text = parts[2] if len(parts) >= 3 else text
+
+    # Try to find a TLDR block (太长不读)
+    tldr_match = re.search(r"\*\*太长不读\*\*[：:](.*?)(?:\n\n|\Z)", text, re.DOTALL)
+    if tldr_match:
+        snippet = tldr_match.group(0)
+    else:
+        # Fall back to first non-empty paragraph
+        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+        snippet = paragraphs[0] if paragraphs else text
+
+    # Strip common Markdown formatting
+    snippet = re.sub(r"#+ ", "", snippet)
+    snippet = re.sub(r"\*\*(.*?)\*\*", r"\1", snippet)
+    snippet = re.sub(r"\*(.*?)\*", r"\1", snippet)
+    snippet = re.sub(r"`(.*?)`", r"\1", snippet)
+    snippet = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", snippet)
+    snippet = re.sub(r"<!-- more -->", "", snippet)
+    snippet = " ".join(snippet.split())  # normalise whitespace
+
+    return snippet[:max_chars].rstrip()
+
+
+def _publish_bsky(
+    db,
+    content: dict,
+    content_id: str,
+    title: str,
+    src: Path,
+    bsky_handle: str,
+    app_password: str,
+    now_iso: str,
+) -> None:
+    """Post content to Bluesky via AT Protocol and create a publish task."""
+    try:
+        from atproto import Client  # noqa: PLC0415
+        from atproto import models as bsky_models  # noqa: PLC0415
+    except ImportError:
+        console.print("[red]atproto not installed.[/red] Run: [bold]pip install atproto[/bold]")
+        raise typer.Exit(1)
+
+    task_id = _make_task_id(content_id)
+    task_dir = FGEO_HOME / "publish" / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    text = _extract_bsky_text(src)
+
+    client = Client()
+    console.print(f"[dim]Logging in to Bluesky as {bsky_handle} …[/dim]")
+    try:
+        client.login(bsky_handle, app_password)
+    except Exception as exc:
+        console.print(f"[red]Bluesky login failed:[/red] {exc}")
+        raise typer.Exit(1)
+
+    # Build external link embed when a published_url exists (e.g. a blog post)
+    embed = None
+    published_url = content.get("published_url") or ""
+    if published_url and published_url.startswith("http"):
+        embed = bsky_models.AppBskyEmbedExternal.Main(
+            external=bsky_models.AppBskyEmbedExternal.External(
+                uri=published_url,
+                title=title,
+                description=text[:200],
+            )
+        )
+
+    console.print("[dim]Sending post …[/dim]")
+    try:
+        response = client.send_post(text=text, embed=embed)
+        post_uri = response.uri
+    except Exception as exc:
+        console.print(f"[red]Post failed:[/red] {exc}")
+        raise typer.Exit(1)
+
+    # Convert AT URI → bsky.app URL: at://did:plc:xxx/app.bsky.feed.post/rkey → URL
+    post_url = ""
+    parts = post_uri.split("/")
+    if len(parts) >= 5:
+        rkey = parts[-1]
+        post_url = f"https://bsky.app/profile/{bsky_handle}/post/{rkey}"
+
+    platform_id = content.get("platform_id") or ""
+    db.create_publish_task(
+        task_id=task_id,
+        content_id=content_id,
+        platform_id=platform_id,
+        repo_url=f"https://bsky.app/profile/{bsky_handle}",
+        branch="",
+        task_dir=str(task_dir),
+        pr_url=post_url or post_uri,
+        status="pr_open",
+    )
+    db.update_content(content_id, "status", "published")
+    db.update_content(content_id, "published_at", now_iso)
+    if post_url:
+        db.update_content(content_id, "published_url", post_url)
+
+    body = (
+        f"[bold]Post URL:[/bold]  {post_url or post_uri}\n"
+        f"[bold]Task ID:[/bold]   {task_id}\n"
+        f"\nRun [bold]fgeo publish task done {task_id}[/bold] to confirm."
+    )
+    console.print(Panel(body, title=f"[green]✓ Posted to Bluesky[/green] — {title}"))
 
 
 # ── Blog git-PR flow ──────────────────────────────────────────────────────────
@@ -258,6 +377,35 @@ def publish_content(
             _publish_blog_git(db, content, content_id, title, src, publish_url, now_iso, force=force)
         else:
             _publish_blog_local(db, content_id, title, src, blog_dir, force, workspace, now_iso)
+
+    elif platform_name == BSKY_PLATFORM:
+        if not source_path:
+            console.print("[red]No source file path recorded for this content.[/red]")
+            console.print(f"Run: [bold]fgeo content set {content_id} source_path <path>[/bold]")
+            raise typer.Exit(1)
+
+        src = Path(source_path)
+        if not src.exists():
+            console.print(f"[red]Source file not found:[/red] {source_path}")
+            raise typer.Exit(1)
+
+        bsky_handle = platform.get("bsky_handle") or ""
+        app_password = platform.get("platform_secret") or ""
+        if not bsky_handle:
+            console.print(
+                "[red]Bluesky handle not set.[/red]\n"
+                f"Run: [bold]fgeo platform set <proj> bluesky bsky_handle marvintalk.bsky.social[/bold]"
+            )
+            raise typer.Exit(1)
+        if not app_password:
+            console.print(
+                "[red]Bluesky app password not set.[/red]\n"
+                "Run: [bold]fgeo platform set <proj> bluesky platform_secret <app-password>[/bold]\n"
+                "[dim]Get an app password at: https://bsky.app/settings/app-passwords[/dim]"
+            )
+            raise typer.Exit(1)
+
+        _publish_bsky(db, content, content_id, title, src, bsky_handle, app_password, now_iso)
 
     else:
         db.update_content(content_id, "status", "published")

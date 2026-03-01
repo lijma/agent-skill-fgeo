@@ -11,7 +11,7 @@ from fgeo.constants import FGEO_HOME
 
 FGEO_DB_FILE = FGEO_HOME / "fgeo.db"
 
-SCHEMA_VERSION = "0.4.0"
+SCHEMA_VERSION = "0.5.0"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS platforms (
     directions  TEXT DEFAULT '',
     pace        TEXT DEFAULT '',
     publish_url TEXT DEFAULT '',
+    bsky_handle TEXT DEFAULT '',
+    platform_secret TEXT DEFAULT '',
     status      TEXT DEFAULT 'active' CHECK(status IN ('active','paused','archived')),
     last_published_at TEXT DEFAULT '',
     created_at  TEXT NOT NULL,
@@ -164,6 +166,10 @@ class Database:
         }
         if "publish_url" not in existing_cols:
             self.conn.execute("ALTER TABLE platforms ADD COLUMN publish_url TEXT DEFAULT ''")
+        if "bsky_handle" not in existing_cols:
+            self.conn.execute("ALTER TABLE platforms ADD COLUMN bsky_handle TEXT DEFAULT ''")
+        if "platform_secret" not in existing_cols:
+            self.conn.execute("ALTER TABLE platforms ADD COLUMN platform_secret TEXT DEFAULT ''")
         self.conn.execute(
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
             ("version", SCHEMA_VERSION),
@@ -321,7 +327,7 @@ class Database:
         plat = self.get_platform(project_name, platform_name)
         if not plat:
             return None
-        allowed = {"directions", "pace", "status", "last_published_at", "publish_url"}
+        allowed = {"directions", "pace", "status", "last_published_at", "publish_url", "bsky_handle", "platform_secret"}
         if field not in allowed:
             return None
         self.conn.execute(
@@ -478,6 +484,7 @@ class Database:
         platform_name: str = "",
         status: str = "",
         direction: str = "",
+        no_plan: bool = False,
     ) -> list[dict[str, Any]]:
         query = "SELECT c.*, p.name as project_name, pl.name as platform_name FROM contents c "
         query += "LEFT JOIN projects p ON c.project_id = p.id "
@@ -505,6 +512,9 @@ class Database:
             conditions.append("c.direction=?")
             params.append(direction)
 
+        if no_plan:
+            conditions.append("(c.plan_id IS NULL OR c.plan_id = '')")
+
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
 
@@ -523,6 +533,7 @@ class Database:
         allowed = {
             "title", "description", "direction", "tags", "status",
             "published_url", "published_at", "content_type", "source_path",
+            "plan_id",
         }
         if field not in allowed:
             return None
@@ -532,6 +543,48 @@ class Database:
         )
         self.conn.commit()
         return self._get_row("contents", content_id)
+
+    def assign_plan_to_contents(
+        self,
+        project_name: str,
+        plan_name: str,
+        platform_names: list[str] | None = None,
+        status: str = "",
+    ) -> int:
+        """Batch-assign plan_id to all matching content records. Returns count of affected rows."""
+        proj = self.get_project(project_name)
+        if not proj:
+            raise ValueError(f"Project not found: {project_name}")
+        plan = self.get_plan(project_name, plan_name)
+        if not plan:
+            raise ValueError(f"Plan not found: {plan_name}")
+
+        conditions: list[str] = ["project_id=?"]
+        params: list[Any] = [proj["id"]]
+
+        if platform_names:
+            plat_ids = [
+                plat["id"]
+                for pname in platform_names
+                if (plat := self.get_platform(project_name, pname)) is not None
+            ]
+            if not plat_ids:
+                return 0
+            placeholders = ",".join("?" * len(plat_ids))
+            conditions.append(f"platform_id IN ({placeholders})")
+            params.extend(plat_ids)
+
+        if status:
+            conditions.append("status=?")
+            params.append(status)
+
+        where = " AND ".join(conditions)
+        cur = self.conn.execute(
+            f"UPDATE contents SET plan_id=?, updated_at=? WHERE {where}",
+            [plan["id"], _now(), *params],
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def remove_content(self, content_id: str) -> bool:
         cur = self.conn.execute("DELETE FROM contents WHERE id=?", (content_id,))

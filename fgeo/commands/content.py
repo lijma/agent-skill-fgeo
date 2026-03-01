@@ -127,6 +127,7 @@ def list_content(
     platform: str = typer.Option("", "--platform", help="Filter by platform (requires --project)"),
     status: str = typer.Option("", "--status", "-s", help="Filter by status: planned, draft, review, published"),
     direction: str = typer.Option("", "--direction", "-d", help="Filter by direction"),
+    no_plan: bool = typer.Option(False, "--no-plan", help="Show only content not assigned to any plan"),
 ) -> None:
     """List content assets."""
     db = get_db()
@@ -135,6 +136,7 @@ def list_content(
         platform_name=platform,
         status=status,
         direction=direction,
+        no_plan=no_plan,
     )
     db.close()
 
@@ -219,6 +221,43 @@ def set_field(
         raise typer.Exit(1)
 
     console.print(f"[green]✓[/green] Content {content_id}: {field} → {value}")
+
+
+@content_app.command("assign-plan")
+def assign_plan(
+    project: str = typer.Argument(help="Project name"),
+    plan: str = typer.Argument(help="Plan name"),
+    platform: list[str] = typer.Option([], "--platform", "-p", help="Filter by platform name (repeatable). Omit to target all platforms."),
+    status: str = typer.Option("", "--status", "-s", help="Filter by content status (draft, published, planned, …). Omit to target all."),
+) -> None:
+    """Batch-assign a plan to all matching content in a project.
+
+    Examples:
+      fgeo content assign-plan myproj gtm-v1
+      fgeo content assign-plan myproj gtm-v1 --platform devto --platform medium
+      fgeo content assign-plan myproj gtm-v1 --platform twitter --status published
+    """
+    db = get_db()
+    try:
+        count = db.assign_plan_to_contents(
+            project_name=project,
+            plan_name=plan,
+            platform_names=list(platform) or None,
+            status=status,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    finally:
+        db.close()
+
+    filters: list[str] = []
+    if platform:
+        filters.append(f"platform: {', '.join(platform)}")
+    if status:
+        filters.append(f"status: {status}")
+    filter_str = f"  [dim]({', '.join(filters)})[/dim]" if filters else ""
+    console.print(f"[green]✓[/green] Assigned plan [bold]{plan}[/bold] to {count} content(s).{filter_str}")
 
 
 @content_app.command("remove")

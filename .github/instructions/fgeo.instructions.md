@@ -176,6 +176,53 @@ If content exists but no platform has been created for it:
 - Then register content with proper associations
 - NEVER register content with missing platform/direction just to "get it tracked"
 
+## ⛔ Anti-Patterns (NEVER do these)
+
+These are common agent failures that violate the workflow:
+
+1. **Skipping brand check** — User says "写一篇文章", agent jumps straight to outline. WRONG. Check brand first.
+2. **Skipping platform question** — User doesn't specify platform, agent assumes "blog" and proceeds. WRONG. Ask explicitly.
+3. **Skipping style check** — No style exists for the platform, agent writes anyway. WRONG. Establish style first.
+4. **Outline without confirmation** — Agent proposes outline AND says "确认后我来写完整版" in the same message. WRONG. One step, then stop.
+5. **Draft without outline approval** — Agent writes full draft before user approves the structure. WRONG.
+6. **Zero-interaction content delivery** — Agent produces the entire article start-to-finish without a single user reply. This is the worst failure mode.
+7. **File analysis as brand substitute** — Brand is empty, but instead of asking the user questions, Agent reads past writing samples and infers a brand profile. WRONG. File analysis is a supplement AFTER the user answers the 4 questions, never a replacement.
+8. **Save-and-register in one shot** — After draft is confirmed, Agent immediately saves AND registers to fgeo without asking where to save or waiting for user review. WRONG. Always: ask save location (plain chat) → save → wait for review → register only after approval.
+9. **Bypassing CLI with direct DB access** — Agent uses `sqlite3` or raw SQL queries to read/write fgeo data. WRONG. ALL data operations MUST go through `fgeo` CLI commands. If the CLI lacks the capability, follow the Capability Gap protocol below.
+
+## ⚠️ Capability Gap Protocol
+
+When you need to perform an operation that **no fgeo CLI command supports**, follow this exact protocol. Do NOT attempt workarounds like direct SQLite access, file editing, or shell scripts.
+
+### Step 1 — Stop and surface the gap
+Tell the user in plain language:
+- What you were trying to do
+- Which fgeo command you expected to exist (or what it would look like)
+- Why the current CLI can't do it
+
+Example:
+> "I need to batch-assign `gtm-funnel-v1` to all content across 7 platforms, but fgeo doesn't have a `content assign-plan` command yet. I can't do this safely without it."
+
+### Step 2 — Encourage filing an issue
+Suggest that the user submits a feature request directly to the upstream repository so it can be properly prioritized and built into the CLI:
+> "To get this feature supported properly without risking your database, please submit a feature request to the fgeo project: https://github.com/lijma/agent-skill-fgeo/issues"
+
+Do NOT use `fcontext req add` to record `fgeo` CLI feature gaps in the user's current project backlog, as `fgeo` is an external tool.
+
+### Step 3 — Propose a backup plan
+Suggest the safest available fallback — in order of preference:
+1. **Manual multi-step CLI** — break the batch into individual `fgeo` calls the user can run one by one
+2. **Deferred** — note the gap in `.fcontext/_topics/` and revisit after the feature is built
+3. **Nothing** — if all alternatives carry data integrity risk, explicitly say so and wait
+
+Never choose a backup that modifies data outside of `fgeo` CLI.
+
+### Trigger conditions (when to activate this protocol)
+- You are about to run `sqlite3`, `python -c "import sqlite3..."`, or any direct DB query
+- You reach for a shell script to simulate a missing fgeo command
+- You consider editing `~/.fgeo/` files directly
+- The user asks you to do something and `fgeo --help` doesn't have a relevant command
+
 ## Workflow Rules
 
 ### Brand & Style
@@ -246,8 +293,8 @@ fgeo goal set <goal-id> <field> <value>
 # Platform
 fgeo platform add <project> <name> [--directions "d1,d2"] [--pace "3/周"]
 fgeo platform list <project>
-fgeo platform show <project> <name>
-fgeo platform set <platform-id> <field> <value>
+fgeo platform show <project> <name>          # shows publish_url, bsky_handle, app password (masked), content stats
+fgeo platform set <project> <name> <field> <value>  # fields: directions, pace, status, publish_url, bsky_handle, platform_secret, last_published_at
 
 # Plan
 fgeo plan create <project> <name> [--strategy] [--goal <goal-id>]
@@ -258,13 +305,17 @@ fgeo plan set <project> <name> <field> <value>
 
 # Content
 fgeo content register <file> [--project] [--platform] [--plan] [--direction] [--tags] [--desc] [--type] [--status]
-fgeo content list [--project] [--platform] [--status] [--direction]
+fgeo content list [--project] [--platform] [--status] [--direction] [--no-plan]
 fgeo content show <id>
-fgeo content set <id> <field> <value>
+fgeo content set <id> <field> <value>          # fields include: plan_id, status, published_url, source_path, …
+fgeo content assign-plan <project> <plan> [--platform p] [--status s]  # batch-assign plan to matching contents
 fgeo content remove <id> [--force]
 
 # Publish
-fgeo publish content <id> [--blog-dir <path>] [--url <url>] [--force]  # blog with publish_url: git PR flow; without: local copy
+fgeo publish content <id> [--blog-dir <path>] [--url <url>] [--force]
+  # blog platform (publish_url set)  → git PR flow
+  # blog platform (no publish_url)   → local copy
+  # bluesky platform                 → post via atproto API
 fgeo publish list [--status draft] [--project <name>] [--platform <name>]  # list publishable content
 fgeo publish task list [--status pr_open|merged|failed]  # list publish tasks
 fgeo publish task show <task-id>                          # show task details

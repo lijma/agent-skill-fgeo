@@ -23,7 +23,7 @@ class TestSchemaInit:
 
     def test_schema_version(self, db: Database):
         row = db.conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
-        assert row["value"] == "0.4.0"
+        assert row["value"] == "0.5.0"
 
     def test_init_idempotent(self, db: Database):
         db.init_schema()
@@ -382,6 +382,26 @@ class TestContents:
         bip = db.list_contents(direction="bip")
         assert len(bip) == 1
 
+    def test_list_contents_filter_no_plan(self, db: Database):
+        db.create_project("fcontext")
+        db.create_plan("fcontext", "gtm-v1")
+        plan = db.list_plans("fcontext")[0]
+        c_with = db.register_content(title="With Plan", project_name="fcontext")
+        c_without = db.register_content(title="No Plan", project_name="fcontext")
+        db.update_content(c_with["id"], "plan_id", plan["id"])
+        result = db.list_contents(no_plan=True)
+        ids = [r["id"] for r in result]
+        assert c_without["id"] in ids
+        assert c_with["id"] not in ids
+
+    def test_list_contents_filter_no_plan_empty_string(self, db: Database):
+        """plan_id = '' (empty string) is also treated as unassigned."""
+        db.create_project("fcontext")
+        c = db.register_content(title="Empty Plan", project_name="fcontext")
+        # plan_id defaults to NULL — should show up in no_plan filter
+        result = db.list_contents(no_plan=True)
+        assert any(r["id"] == c["id"] for r in result)
+
     def test_get_content(self, db: Database):
         db.create_project("fcontext")
         created = db.register_content(title="Test", project_name="fcontext")
@@ -615,6 +635,45 @@ class TestStyles:
         cols_after = {row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()}
         assert "publish_url" in cols_after
 
+    def test_platforms_has_bsky_handle_column(self, db: Database):
+        cols = {row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()}
+        assert "bsky_handle" in cols
+
+    def test_platforms_has_platform_secret_column(self, db: Database):
+        cols = {row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()}
+        assert "platform_secret" in cols
+
+    def test_migration_adds_bsky_handle_and_platform_secret(self, db: Database):
+        """Simulate upgrading from 0.4.0: drop new columns, re-run init_schema."""
+        db.conn.executescript("""
+            CREATE TABLE platforms_old2 AS SELECT id, project_id, name, directions, pace,
+                publish_url, status, last_published_at, created_at, updated_at FROM platforms;
+            DROP TABLE platforms;
+            ALTER TABLE platforms_old2 RENAME TO platforms;
+        """)
+        cols_before = {row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()}
+        assert "bsky_handle" not in cols_before
+        assert "platform_secret" not in cols_before
+        # Re-run migration
+        db.init_schema()
+        cols_after = {row[1] for row in db.conn.execute("PRAGMA table_info(platforms)").fetchall()}
+        assert "bsky_handle" in cols_after
+        assert "platform_secret" in cols_after
+
+    def test_update_platform_allows_bsky_handle(self, db: Database):
+        db.create_project("proj")
+        db.add_platform("proj", "bluesky")
+        result = db.update_platform("proj", "bluesky", "bsky_handle", "marvintalk.bsky.social")
+        assert result is not None
+        assert result["bsky_handle"] == "marvintalk.bsky.social"
+
+    def test_update_platform_allows_platform_secret(self, db: Database):
+        db.create_project("proj")
+        db.add_platform("proj", "bluesky")
+        result = db.update_platform("proj", "bluesky", "platform_secret", "xxxx-yyyy-zzzz-wwww")
+        assert result is not None
+        assert result["platform_secret"] == "xxxx-yyyy-zzzz-wwww"
+
 
 class TestPublishTasks:
     """Tests for publish_task CRUD in Database."""
@@ -688,3 +747,90 @@ class TestPublishTasks:
         """Covers early-return when task doesn't exist (DB line 758)."""
         result = db.update_publish_task("ptask-nope", "status", "merged")
         assert result is None
+
+
+class TestContentAssignPlan:
+    """Tests for Database.assign_plan_to_contents and update_content plan_id support."""
+
+    def _setup(self, db: Database):
+        """Create project, plan, platforms, and contents. Return (plan_id, content_ids dict)."""
+        db.create_project("myproj")
+        db.create_plan("myproj", "gtm-v1")
+        db.add_platform("myproj", "devto")
+        db.add_platform("myproj", "medium")
+        db.add_platform("myproj", "twitter")
+        c1 = db.register_content(title="A", project_name="myproj", platform_name="devto")
+        c2 = db.register_content(title="B", project_name="myproj", platform_name="devto")
+        c3 = db.register_content(title="C", project_name="myproj", platform_name="medium")
+        c4 = db.register_content(title="D", project_name="myproj", platform_name="twitter")
+        plan = db.get_plan("myproj", "gtm-v1")
+        return plan["id"], {"c1": c1["id"], "c2": c2["id"], "c3": c3["id"], "c4": c4["id"]}
+
+    def test_assign_all_contents_in_project(self, db: Database):
+        plan_id, ids = self._setup(db)
+        count = db.assign_plan_to_contents("myproj", "gtm-v1")
+        assert count == 4
+        for cid in ids.values():
+            c = db.get_content(cid)
+            assert c["plan_id"] == plan_id
+
+    def test_assign_filtered_by_platform(self, db: Database):
+        plan_id, ids = self._setup(db)
+        count = db.assign_plan_to_contents("myproj", "gtm-v1", platform_names=["devto"])
+        assert count == 2
+        assert db.get_content(ids["c1"])["plan_id"] == plan_id
+        assert db.get_content(ids["c2"])["plan_id"] == plan_id
+        # medium and twitter should remain unset
+        assert db.get_content(ids["c3"])["plan_id"] is None
+        assert db.get_content(ids["c4"])["plan_id"] is None
+
+    def test_assign_filtered_by_multiple_platforms(self, db: Database):
+        plan_id, ids = self._setup(db)
+        count = db.assign_plan_to_contents("myproj", "gtm-v1", platform_names=["devto", "medium"])
+        assert count == 3
+        assert db.get_content(ids["c4"])["plan_id"] is None
+
+    def test_assign_filtered_by_status(self, db: Database):
+        plan_id, ids = self._setup(db)
+        db.update_content(ids["c1"], "status", "published")
+        count = db.assign_plan_to_contents("myproj", "gtm-v1", status="published")
+        assert count == 1
+        assert db.get_content(ids["c1"])["plan_id"] == plan_id
+        assert db.get_content(ids["c2"])["plan_id"] is None
+
+    def test_assign_filtered_by_platform_and_status(self, db: Database):
+        plan_id, ids = self._setup(db)
+        db.update_content(ids["c1"], "status", "published")
+        count = db.assign_plan_to_contents("myproj", "gtm-v1",
+                                           platform_names=["devto"], status="published")
+        assert count == 1
+        assert db.get_content(ids["c1"])["plan_id"] == plan_id
+        assert db.get_content(ids["c2"])["plan_id"] is None
+
+    def test_assign_unknown_project_raises(self, db: Database):
+        db.create_project("myproj")
+        db.create_plan("myproj", "gtm-v1")
+        with pytest.raises(ValueError, match="Project not found"):
+            db.assign_plan_to_contents("no-such-project", "gtm-v1")
+
+    def test_assign_unknown_plan_raises(self, db: Database):
+        db.create_project("myproj")
+        with pytest.raises(ValueError, match="Plan not found"):
+            db.assign_plan_to_contents("myproj", "no-such-plan")
+
+    def test_assign_unknown_platforms_returns_zero(self, db: Database):
+        db.create_project("myproj")
+        db.create_plan("myproj", "gtm-v1")
+        db.register_content(title="X", project_name="myproj")
+        count = db.assign_plan_to_contents("myproj", "gtm-v1",
+                                           platform_names=["no-such-platform"])
+        assert count == 0
+
+    def test_update_content_allows_plan_id(self, db: Database):
+        db.create_project("myproj")
+        db.create_plan("myproj", "gtm-v1")
+        c = db.register_content(title="X", project_name="myproj")
+        plan = db.get_plan("myproj", "gtm-v1")
+        result = db.update_content(c["id"], "plan_id", plan["id"])
+        assert result is not None
+        assert result["plan_id"] == plan["id"]

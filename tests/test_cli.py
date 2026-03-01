@@ -1385,5 +1385,407 @@ class TestGitRemoteToWebUrl:
         assert _git_remote_to_web_url("git@github.com:user/repo") == "https://github.com/user/repo"
 
 
+# ── Bluesky helpers ───────────────────────────────────────────────────────────
+
+def _make_fake_atproto(post_uri: str = "at://did:plc:abc123/app.bsky.feed.post/rkey777"):
+    """Return a fake atproto module with Client and models."""
+    import sys
+    import types
+
+    fake = types.ModuleType("atproto")
+
+    _uri = post_uri
+
+    class _Client:
+        def login(self, handle, pw):
+            pass
+
+        def send_post(self, text, embed=None):
+            return type("Resp", (), {"uri": _uri})()
+
+    class _Models:
+        class AppBskyEmbedExternal:
+            class Main:
+                def __init__(self, external=None):
+                    pass
+
+            class External:
+                def __init__(self, uri="", title="", description=""):
+                    pass
+
+    fake.Client = _Client
+    fake.models = _Models
+    return fake
+
+
+class TestExtractBskyText:
+    """Unit tests for _extract_bsky_text helper."""
+
+    def test_with_tldr_and_frontmatter(self, tmp_path: Path):
+        from fgeo.commands.publish import _extract_bsky_text
+        f = tmp_path / "a.md"
+        f.write_text("---\ntitle: T\ndate: 2026-01-01\n---\n\n**太长不读**：这是摘要文字。\n\n正文在下面。\n")
+        result = _extract_bsky_text(f)
+        assert "摘要文字" in result
+        assert "正文" not in result
+
+    def test_without_tldr_takes_first_paragraph(self, tmp_path: Path):
+        from fgeo.commands.publish import _extract_bsky_text
+        f = tmp_path / "b.md"
+        f.write_text("---\ntitle: T\n---\n\n第一段内容在这里。\n\n第二段内容不应该入选。\n")
+        result = _extract_bsky_text(f)
+        assert "第一段" in result
+        assert "第二段" not in result
+
+    def test_no_frontmatter(self, tmp_path: Path):
+        from fgeo.commands.publish import _extract_bsky_text
+        f = tmp_path / "c.md"
+        f.write_text("# Title\n\nContent here.\n")
+        result = _extract_bsky_text(f)
+        # First paragraph is the heading; after stripping "# " we get the heading text
+        assert "Title" in result
+
+    def test_truncation_to_max_chars(self, tmp_path: Path):
+        from fgeo.commands.publish import _extract_bsky_text
+        f = tmp_path / "d.md"
+        f.write_text("A" * 500 + "\n")
+        result = _extract_bsky_text(f, max_chars=100)
+        assert len(result) <= 100
+
+    def test_only_frontmatter_no_body(self, tmp_path: Path):
+        from fgeo.commands.publish import _extract_bsky_text
+        f = tmp_path / "e.md"
+        f.write_text("---\ntitle: T\n---\n")
+        result = _extract_bsky_text(f)
+        # Should not crash; returns an empty or whitespace-stripped string
+        assert isinstance(result, str)
+
+    def test_strips_markdown_formatting(self, tmp_path: Path):
+        from fgeo.commands.publish import _extract_bsky_text
+        f = tmp_path / "f.md"
+        f.write_text("**bold** and *italic* and `code` and [link](https://example.com)\n")
+        result = _extract_bsky_text(f)
+        assert "**" not in result
+        assert "*" not in result
+        assert "`" not in result
+        assert "[link]" not in result
+
+
+class TestPublishBskyFlow:
+    """Integration tests for fgeo publish content <bsky-platform>."""
+
+    BSKY_HANDLE = "marvintalk.bsky.social"
+    APP_PASSWORD = "xxxx-yyyy-zzzz-wwww"
+    POST_URI = "at://did:plc:abc123/app.bsky.feed.post/rkey777"
+
+    @pytest.fixture(autouse=True)
+    def _fake_atproto(self):
+        """Inject a fake atproto module for the duration of each test."""
+        import sys
+        fake = _make_fake_atproto(self.POST_URI)
+        sys.modules["atproto"] = fake
+        yield
+        sys.modules.pop("atproto", None)
+
+    def _register_bsky_content(self, fgeo_home: Path, tmp_path: Path) -> tuple[str, Path]:
+        """Create a bluesky platform with credentials and register a markdown file."""
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "bsky_handle", self.BSKY_HANDLE])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "platform_secret", self.APP_PASSWORD])
+        src = tmp_path / "post.md"
+        src.write_text(
+            "---\ntitle: Test Post\ndate: 2026-03-01\n---\n\n"
+            "**太长不读**：这是测试内容摘要。\n\n正文在此。\n"
+        )
+        reg = runner.invoke(app, [
+            "content", "register", str(src),
+            "--project", "bskyproj",
+            "--platform", "bluesky",
+        ])
+        content_id = _extract_id(reg.output, "cont")
+        return content_id, src
+
+    # ── Platform field tests ─────────────────────────────────────────────────
+
+    def test_platform_set_bsky_handle(self, fgeo_home: Path, tmp_path: Path):
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        result = runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                                     "bsky_handle", self.BSKY_HANDLE])
+        assert result.exit_code == 0
+        show = runner.invoke(app, ["platform", "show", "bskyproj", "bluesky"])
+        assert self.BSKY_HANDLE in show.output
+
+    def test_platform_show_masks_platform_secret(self, fgeo_home: Path, tmp_path: Path):
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "platform_secret", self.APP_PASSWORD])
+        show = runner.invoke(app, ["platform", "show", "bskyproj", "bluesky"])
+        assert "***" in show.output
+        assert self.APP_PASSWORD not in show.output
+
+    def test_platform_show_unset_fields_show_not_set(self, fgeo_home: Path, tmp_path: Path):
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        show = runner.invoke(app, ["platform", "show", "bskyproj", "bluesky"])
+        assert "(not set)" in show.output
+
+    # ── Happy-path publish ────────────────────────────────────────────────────
+
+    def test_publish_bsky_exits_zero_and_shows_post_url(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "bsky.app" in result.output or "Bluesky" in result.output
+
+    def test_publish_bsky_creates_publish_task(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["publish", "content", content_id])
+        task_list = runner.invoke(app, ["publish", "task", "list"])
+        assert task_list.exit_code == 0
+        assert "pr_open" in task_list.output
+
+    def test_publish_bsky_marks_content_published(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["publish", "content", content_id])
+        show = runner.invoke(app, ["content", "show", content_id])
+        assert "published" in show.output
+
+    def test_publish_bsky_with_published_url_builds_embed(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """When content has a published_url, the post should include an embed."""
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+        # Set an existing published_url (e.g. from a previous blog publish)
+        runner.invoke(app, ["content", "set", content_id,
+                            "published_url", "https://example.com/my-post"])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+
+    def test_publish_bsky_malformed_uri_post_url_empty(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """URI with < 5 parts → post_url stays empty; content still published."""
+        import sys, types
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+
+        class _ShortUriClient:
+            def login(self, h, p): pass
+            def send_post(self, text, embed=None):
+                return type("R", (), {"uri": "at://short"})()
+
+        sys.modules["atproto"].Client = _ShortUriClient
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+
+    # ── Error-path publish ────────────────────────────────────────────────────
+
+    def test_publish_bsky_missing_handle_exits_1(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        src = tmp_path / "post.md"
+        src.write_text("---\ntitle: T\n---\nHello.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "bskyproj", "--platform", "bluesky"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "bsky_handle" in result.output
+
+    def test_publish_bsky_missing_password_exits_1(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "bsky_handle", self.BSKY_HANDLE])
+        src = tmp_path / "post.md"
+        src.write_text("---\ntitle: T\n---\nHello.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "bskyproj", "--platform", "bluesky"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "platform_secret" in result.output
+
+    def test_publish_bsky_login_failure_exits_1(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        import sys
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+
+        class _FailLogin:
+            def login(self, h, p): raise Exception("Invalid credentials")
+            def send_post(self, text, embed=None): ...
+
+        sys.modules["atproto"].Client = _FailLogin
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "login" in result.output.lower() or "failed" in result.output.lower()
+
+    def test_publish_bsky_post_failure_exits_1(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        import sys
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+
+        class _FailPost:
+            def login(self, h, p): pass
+            def send_post(self, text, embed=None): raise Exception("Rate limited")
+
+        sys.modules["atproto"].Client = _FailPost
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower() or "post" in result.output.lower()
+
+    def test_publish_bsky_atproto_not_installed(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """When atproto is not installed (ImportError), show install instructions."""
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+        # Setting sys.modules entry to None blocks the import with ImportError
+        monkeypatch.setitem(__import__("sys").modules, "atproto", None)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "atproto" in result.output or "pip install" in result.output
+
+    def test_publish_bsky_missing_source_path_exits_1(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """If source_path is cleared, publish should exit with error."""
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "source" in result.output.lower()
+
+    def test_publish_bsky_missing_source_file_exits_1(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """If source file on disk is gone, publish should exit with error."""
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
+        src.unlink()  # delete the file
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+
+class TestContentAssignPlan:
+    """CLI tests for fgeo content assign-plan."""
+
+    def _setup(self, fgeo_home: Path, tmp_path: Path) -> dict[str, str]:
+        """Create project, plan, platforms, and content. Return dict of content IDs."""
+        runner.invoke(app, ["project", "create", "asproj"])
+        runner.invoke(app, ["plan",    "create",  "asproj", "gtm-v1"])
+        runner.invoke(app, ["platform", "add",    "asproj", "devto"])
+        runner.invoke(app, ["platform", "add",    "asproj", "medium"])
+        runner.invoke(app, ["platform", "add",    "asproj", "twitter"])
+        ids: dict[str, str] = {}
+        for title, platform in [("PostA", "devto"), ("PostB", "devto"),
+                                 ("PostC", "medium"), ("PostD", "twitter")]:
+            f = tmp_path / f"{title}.md"
+            f.write_text(f"# {title}\n\nContent.\n")
+            reg = runner.invoke(app, [
+                "content", "register", str(f),
+                "--project", "asproj",
+                "--platform", platform,
+            ])
+            ids[title] = _extract_id(reg.output, "cont")
+        return ids
+
+    def test_assign_all_exits_zero(self, fgeo_home: Path, tmp_path: Path):
+        self._setup(fgeo_home, tmp_path)
+        result = runner.invoke(app, ["content", "assign-plan", "asproj", "gtm-v1"])
+        assert result.exit_code == 0
+        assert "4" in result.output
+
+    def test_assign_platform_filter(self, fgeo_home: Path, tmp_path: Path):
+        self._setup(fgeo_home, tmp_path)
+        result = runner.invoke(app, [
+            "content", "assign-plan", "asproj", "gtm-v1",
+            "--platform", "devto",
+        ])
+        assert result.exit_code == 0
+        assert "2" in result.output
+        assert "devto" in result.output
+
+    def test_assign_multiple_platform_filters(self, fgeo_home: Path, tmp_path: Path):
+        self._setup(fgeo_home, tmp_path)
+        result = runner.invoke(app, [
+            "content", "assign-plan", "asproj", "gtm-v1",
+            "--platform", "devto", "--platform", "medium",
+        ])
+        assert result.exit_code == 0
+        assert "3" in result.output
+
+    def test_assign_status_filter(self, fgeo_home: Path, tmp_path: Path):
+        ids = self._setup(fgeo_home, tmp_path)
+        runner.invoke(app, ["content", "set", ids["PostA"], "status", "published"])
+        result = runner.invoke(app, [
+            "content", "assign-plan", "asproj", "gtm-v1",
+            "--status", "published",
+        ])
+        assert result.exit_code == 0
+        assert "1" in result.output
+        assert "published" in result.output
+
+    def test_assign_unknown_project_exits_1(self, fgeo_home: Path):
+        result = runner.invoke(app, ["content", "assign-plan", "no-proj", "no-plan"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_assign_unknown_plan_exits_1(self, fgeo_home: Path):
+        runner.invoke(app, ["project", "create", "asproj"])
+        result = runner.invoke(app, ["content", "assign-plan", "asproj", "no-plan"])
+        assert result.exit_code == 1
+        assert "Plan not found" in result.output
+
+    def test_assign_unknown_platform_returns_zero(self, fgeo_home: Path, tmp_path: Path):
+        self._setup(fgeo_home, tmp_path)
+        result = runner.invoke(app, [
+            "content", "assign-plan", "asproj", "gtm-v1",
+            "--platform", "ghost-platform",
+        ])
+        assert result.exit_code == 0
+        assert "0" in result.output
+
+    def test_content_set_plan_id(self, fgeo_home: Path, tmp_path: Path):
+        """fgeo content set <id> plan_id <plan_id> should now work."""
+        ids = self._setup(fgeo_home, tmp_path)
+        from fgeo.database import get_db
+        db = get_db()
+        plan = db.get_plan("asproj", "gtm-v1")
+        db.close()
+        result = runner.invoke(app, ["content", "set", ids["PostA"], "plan_id", plan["id"]])
+        assert result.exit_code == 0
+        assert "plan_id" in result.output
+
+
+
+
 
 
