@@ -648,3 +648,105 @@ class TestPublishToWechatHeadlessAndEdgePaths:
 
         assert result["status"] == "failed"
         assert "boom" in result["message"]
+
+
+class TestInstallPlaywrightBrowsers:
+    """Coverage for the new _install_playwright_browsers helper."""
+
+    def test_success(self):
+        from fgeo.publishers.wechat import _install_playwright_browsers
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        with patch("subprocess.run", return_value=mock_result):
+            _install_playwright_browsers()  # should not raise
+
+    def test_failure_exits(self):
+        from fgeo.publishers.wechat import _install_playwright_browsers
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        with patch("subprocess.run", return_value=mock_result):
+            with pytest.raises(SystemExit):
+                _install_playwright_browsers()
+
+
+class TestCheckPlaywrightBinaryBranches:
+    """Coverage for _check_playwright binary-detection branches."""
+
+    def test_binary_missing_triggers_install(self, tmp_path):
+        """When executable_path does not exist, _install_playwright_browsers is called."""
+        from fgeo.publishers.wechat import _check_playwright
+
+        fake_pw_mod = MagicMock()
+        fake_sync_ctx = MagicMock()
+        fake_sync_ctx.__enter__ = MagicMock(return_value=fake_sync_ctx)
+        fake_sync_ctx.__exit__ = MagicMock(return_value=False)
+        fake_sync_ctx.chromium.executable_path = str(tmp_path / "nonexistent" / "chromium")
+        fake_pw_mod.sync_playwright.return_value = fake_sync_ctx
+
+        with patch.dict("sys.modules", {
+            "playwright": fake_pw_mod,
+            "playwright.sync_api": fake_pw_mod,
+        }):
+            with patch("fgeo.publishers.wechat._install_playwright_browsers") as mock_install:
+                _check_playwright()
+                mock_install.assert_called_once()
+
+    def test_binary_exists_no_install(self, tmp_path):
+        """When executable_path exists, _install_playwright_browsers is NOT called."""
+        from fgeo.publishers.wechat import _check_playwright
+
+        exe = tmp_path / "chromium"
+        exe.touch()
+
+        fake_pw_mod = MagicMock()
+        fake_sync_ctx = MagicMock()
+        fake_sync_ctx.__enter__ = MagicMock(return_value=fake_sync_ctx)
+        fake_sync_ctx.__exit__ = MagicMock(return_value=False)
+        fake_sync_ctx.chromium.executable_path = str(exe)
+        fake_pw_mod.sync_playwright.return_value = fake_sync_ctx
+
+        with patch.dict("sys.modules", {
+            "playwright": fake_pw_mod,
+            "playwright.sync_api": fake_pw_mod,
+        }):
+            with patch("fgeo.publishers.wechat._install_playwright_browsers") as mock_install:
+                _check_playwright()
+                mock_install.assert_not_called()
+
+    def test_sync_playwright_exception_is_swallowed(self):
+        """If sync_playwright() raises, the exception is caught and we continue."""
+        from fgeo.publishers.wechat import _check_playwright
+
+        fake_pw_mod = MagicMock()
+        bad_sync = MagicMock(side_effect=RuntimeError("pw init error"))
+        fake_pw_mod.sync_playwright = bad_sync
+
+        with patch.dict("sys.modules", {
+            "playwright": fake_pw_mod,
+            "playwright.sync_api": fake_pw_mod,
+        }):
+            _check_playwright()  # should not raise
+
+    def test_install_failure_propagates_system_exit(self, tmp_path):
+        """SystemExit from _install_playwright_browsers propagates out (except SystemExit: raise)."""
+        from fgeo.publishers.wechat import _check_playwright
+
+        fake_pw_mod = MagicMock()
+        fake_sync_ctx = MagicMock()
+        fake_sync_ctx.__enter__ = MagicMock(return_value=fake_sync_ctx)
+        fake_sync_ctx.__exit__ = MagicMock(return_value=False)
+        fake_sync_ctx.chromium.executable_path = str(tmp_path / "nonexistent" / "chromium")
+        fake_pw_mod.sync_playwright.return_value = fake_sync_ctx
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1  # install fails → _install_playwright_browsers raises SystemExit
+
+        with patch.dict("sys.modules", {
+            "playwright": fake_pw_mod,
+            "playwright.sync_api": fake_pw_mod,
+        }):
+            with patch("subprocess.run", return_value=mock_result):
+                with pytest.raises(SystemExit):
+                    _check_playwright()

@@ -69,16 +69,48 @@ def _load_cookies() -> list[dict] | None:
 
 
 def _check_playwright() -> None:
-    """Check that playwright is installed and browsers are available."""
+    """Check that playwright is installed and browsers are available.
+
+    If the playwright Python package is installed but the Chromium browser
+    binary is missing, automatically downloads it via ``playwright install chromium``
+    so the user does not need to run it manually.
+    """
     try:
         import playwright  # noqa: F401
     except ImportError:
         console.print(
             "[red]playwright not installed.[/red]\n"
-            "Run: [bold]pip install fgeo\\[publish][/bold]\n"
-            "Then: [bold]playwright install chromium[/bold]"
+            "Run: [bold]pip install fgeo\\[publish][/bold]"
         )
         raise SystemExit(1)
+
+    # Check if Chromium binary is present; auto-install if not.
+    try:
+        from playwright.sync_api import sync_playwright as _sync_playwright
+
+        with _sync_playwright() as _p:
+            _browser_path = Path(_p.chromium.executable_path)
+        if not _browser_path.exists():
+            _install_playwright_browsers()
+    except SystemExit:
+        raise
+    except Exception:
+        pass  # Browser path check failed; let launch() surface the real error.
+
+
+def _install_playwright_browsers() -> None:
+    """Download Playwright browser binaries (chromium only)."""
+    import subprocess
+
+    console.print("[yellow]Chromium browser not found — downloading (one-time setup)…[/yellow]")
+    result = subprocess.run(["playwright", "install", "chromium"])
+    if result.returncode != 0:
+        console.print(
+            "[red]Failed to install Chromium automatically.[/red]\n"
+            "Run manually: [bold]playwright install chromium[/bold]"
+        )
+        raise SystemExit(1)
+    console.print("[green]✓ Chromium installed.[/green]")
 
 
 def _login_with_qr(page: Any) -> bool:
