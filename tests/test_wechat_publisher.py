@@ -13,64 +13,56 @@ import pytest
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _make_mock_page(*, logged_in: bool = True, iframe_editor: bool = True):
-    """Build a mock Playwright page with configurable behaviour."""
+def _make_mock_page(*, logged_in: bool = True):
+    """Build a mock Playwright page matching the real WeChat MP DOM (2026-03).
+
+    Selectors used by the production code:
+      textarea#title            — article title
+      #author                   — author input
+      #ueditor_0 .ProseMirror[contenteditable='true'] — rich editor div
+      textarea#js_description   — digest / abstract
+      #js_submit button         — save-draft button
+    """
     page = MagicMock()
 
     # _is_logged_in: page.url controls redirect detection
     if logged_in:
-        page.url = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index"
+        page.url = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index&token=862082663"
     else:
         page.url = "https://mp.weixin.qq.com/cgi-bin/loginpage"
 
-    # Locators returned by page.locator(...)
-    title_input = MagicMock()
-    title_input.is_visible.return_value = True
+    # Per-selector mocks
+    title_el = MagicMock()
+    title_el.is_visible.return_value = True
 
-    author_input = MagicMock()
-    author_input.is_visible.return_value = True
+    author_el = MagicMock()
+    author_el.is_visible.return_value = True
 
-    digest_input = MagicMock()
-    digest_input.is_visible.return_value = True
-
-    save_btn = MagicMock()
-    save_btn.is_visible.return_value = True
-
-    # Editor element (body inside iframe or div)
     editor_el = MagicMock()
-    editor_el.evaluate.return_value = "paste"  # ClipboardEvent succeeded
+    editor_el.evaluate.return_value = "paste"
+    editor_el.is_visible.return_value = True
+
+    digest_el = MagicMock()
+    digest_el.is_visible.return_value = True
+
+    save_btn_el = MagicMock()
+    save_btn_el.is_visible.return_value = True
 
     def _locator(selector: str):
-        if selector == "#title":
-            return title_input
+        if "textarea#title" in selector or selector == "textarea#title":
+            return title_el
         if selector == "#author":
-            return author_input
-        if "textarea" in selector:
-            loc = MagicMock()
-            loc.first = digest_input
-            return loc
-        if "has-text" in selector:
-            loc = MagicMock()
-            loc.first = save_btn
-            return loc
-        # contenteditable fallback
-        loc = MagicMock()
-        loc.first = editor_el
-        return loc
+            return author_el
+        if "ProseMirror" in selector:
+            return editor_el
+        if "js_description" in selector:
+            return digest_el
+        if "js_submit" in selector:
+            return save_btn_el
+        # Default fallback
+        return MagicMock()
 
     page.locator = _locator
-
-    # Frame locator for iframe editor
-    if iframe_editor:
-        frame_loc = MagicMock()
-        body_loc = MagicMock()
-        body_loc.evaluate.return_value = "paste"
-        frame_loc.locator.return_value = body_loc
-        page.frame_locator = MagicMock(return_value=frame_loc)
-    else:
-        # iframe not found → raise so fallback kicks in
-        page.frame_locator = MagicMock(side_effect=Exception("no iframe"))
-
     return page
 
 
@@ -127,6 +119,24 @@ class TestSaveCookies:
         assert fake_file.exists()
         data = json.loads(fake_file.read_text())
         assert data[0]["name"] == "sid"
+
+
+class TestClearCookies:
+    def test_deletes_existing_file(self, tmp_path: Path):
+        from fgeo.publishers.wechat import _clear_cookies
+
+        fake_file = tmp_path / "cookies.json"
+        fake_file.write_text('[{"name": "sid"}]')
+        with patch("fgeo.publishers.wechat.COOKIES_FILE", fake_file):
+            _clear_cookies()
+        assert not fake_file.exists()
+
+    def test_noop_when_no_file(self, tmp_path: Path):
+        from fgeo.publishers.wechat import _clear_cookies
+
+        fake_file = tmp_path / "cookies.json"  # does not exist
+        with patch("fgeo.publishers.wechat.COOKIES_FILE", fake_file):
+            _clear_cookies()  # should not raise
 
 
 class TestLoadCookies:
@@ -210,14 +220,32 @@ class TestIsLoggedIn:
 
         page = MagicMock()
         page.url = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index"
+        page.inner_text.return_value = "Welcome to WeChat MP"
         assert _is_logged_in(page) is True
 
-    def test_not_logged_in(self):
+    def test_not_logged_in_by_url(self):
         from fgeo.publishers.wechat import _is_logged_in
 
         page = MagicMock()
         page.url = "https://mp.weixin.qq.com/cgi-bin/loginpage"
         assert _is_logged_in(page) is False
+
+    def test_session_expired_text_detected(self):
+        from fgeo.publishers.wechat import _is_logged_in
+
+        page = MagicMock()
+        page.url = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index"
+        page.inner_text.return_value = "Login timeout, Please Log in again."
+        assert _is_logged_in(page) is False
+
+    def test_inner_text_exception_swallowed(self):
+        """If inner_text() raises, assume logged in — let later steps fail naturally."""
+        from fgeo.publishers.wechat import _is_logged_in
+
+        page = MagicMock()
+        page.url = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index"
+        page.inner_text.side_effect = Exception("detached")
+        assert _is_logged_in(page) is True
 
     def test_exception_returns_false(self):
         from fgeo.publishers.wechat import _is_logged_in
@@ -228,13 +256,28 @@ class TestIsLoggedIn:
 
 
 class TestNavigateToEditor:
-    def test_success(self):
+    def test_success_with_token(self):
         from fgeo.publishers.wechat import _navigate_to_editor
 
         page = MagicMock()
+        page.url = "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&token=123"
+        assert _navigate_to_editor(page, token="123") is True
+
+    def test_success_without_token(self):
+        from fgeo.publishers.wechat import _navigate_to_editor
+
+        page = MagicMock()
+        page.url = "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit"
         assert _navigate_to_editor(page) is True
 
-    def test_failure(self):
+    def test_redirected_to_login_returns_false(self):
+        from fgeo.publishers.wechat import _navigate_to_editor
+
+        page = MagicMock()
+        page.url = "https://mp.weixin.qq.com/cgi-bin/loginpage"
+        assert _navigate_to_editor(page, token="abc") is False
+
+    def test_goto_exception_returns_false(self):
         from fgeo.publishers.wechat import _navigate_to_editor
 
         page = MagicMock()
@@ -242,42 +285,54 @@ class TestNavigateToEditor:
         assert _navigate_to_editor(page) is False
 
 
+class TestExtractToken:
+    def test_extracts_token_from_url(self):
+        from fgeo.publishers.wechat import _extract_token
+
+        url = "https://mp.weixin.qq.com/cgi-bin/home?t=home/index&lang=en_US&token=862082663"
+        assert _extract_token(url) == "862082663"
+
+    def test_returns_empty_when_no_token(self):
+        from fgeo.publishers.wechat import _extract_token
+
+        assert _extract_token("https://mp.weixin.qq.com/cgi-bin/home") == ""
+
+    def test_returns_empty_on_exception(self):
+        from fgeo.publishers.wechat import _extract_token
+        from unittest.mock import patch
+
+        with patch("fgeo.publishers.wechat.urlparse", side_effect=Exception("boom")):
+            assert _extract_token("https://example.com") == ""
+
+
 class TestFillArticle:
-    def test_iframe_editor_paste(self):
+    def test_basic_content_injection(self):
         from fgeo.publishers.wechat import _fill_article
 
-        page = _make_mock_page(iframe_editor=True)
-        result = _fill_article(page, "Test Title", "<p>Hello</p>")
-        assert result is True
-
-    def test_div_editor_fallback(self):
-        from fgeo.publishers.wechat import _fill_article
-
-        page = _make_mock_page(iframe_editor=False)
+        page = _make_mock_page()
         result = _fill_article(page, "Test Title", "<p>Hello</p>")
         assert result is True
 
     def test_with_author_and_digest(self):
         from fgeo.publishers.wechat import _fill_article
 
-        page = _make_mock_page(iframe_editor=True)
+        page = _make_mock_page()
         result = _fill_article(page, "Test", "<p>Hi</p>", author="Marvin", digest="Summary")
         assert result is True
 
-    def test_no_editor_found_returns_false(self):
+    def test_editor_not_found_returns_false(self):
         from fgeo.publishers.wechat import _fill_article
 
-        page = _make_mock_page(iframe_editor=False)
-        # Make div locator also fail
+        page = _make_mock_page()
         original_locator = page.locator
 
-        def _fail_all(selector):
-            loc = original_locator(selector)
-            if "ProseMirror" in selector or "contenteditable" in selector:
-                loc.first.wait_for.side_effect = Exception("no editor")
-            return loc
+        def _fail_editor(selector: str):
+            el = original_locator(selector)
+            if "ProseMirror" in selector:
+                el.wait_for.side_effect = Exception("editor not found")
+            return el
 
-        page.locator = _fail_all
+        page.locator = _fail_editor
         result = _fill_article(page, "Test", "<p>Hi</p>")
         assert result is False
 
@@ -296,15 +351,14 @@ class TestSaveDraft:
 
         page = MagicMock()
         btn = MagicMock()
-        btn.is_visible.return_value = True
-        loc = MagicMock()
-        loc.first = btn
-        page.locator.return_value = loc
+        page.locator.return_value = btn
         page.url = "https://mp.weixin.qq.com/cgi-bin/appmsg?action=edit&id=123"
 
         result = _save_draft(page)
         assert "appmsg" in result
         btn.click.assert_called_once()
+        # Confirm the correct selector was used
+        page.locator.assert_called_once_with("#js_submit button")
 
     def test_exception_returns_empty(self):
         from fgeo.publishers.wechat import _save_draft
@@ -500,6 +554,38 @@ class TestPublishToWechat:
 
         assert result["status"] == "draft_saved"
 
+    def test_stale_cookies_cleared_on_session_expiry(self):
+        """When saved cookies exist but session is expired, _clear_cookies is called."""
+        from fgeo.publishers.wechat import publish_to_wechat
+
+        import sys
+
+        page = _make_mock_page(logged_in=False)
+        cm, browser, context = _make_mock_playwright(page)
+
+        fake_pw_mod = MagicMock()
+        fake_pw_mod.sync_playwright.return_value = cm
+
+        clear_mock = MagicMock()
+
+        with patch("fgeo.publishers.wechat._check_playwright"), \
+             patch("fgeo.publishers.wechat._load_cookies", return_value=[{"name": "stale"}]), \
+             patch("fgeo.publishers.wechat._save_cookies"), \
+             patch("fgeo.publishers.wechat._clear_cookies", clear_mock), \
+             patch("fgeo.publishers.wechat._is_logged_in", return_value=False), \
+             patch("fgeo.publishers.wechat._login_with_qr", return_value=True), \
+             patch("fgeo.publishers.wechat._navigate_to_editor", return_value=True), \
+             patch("fgeo.publishers.wechat._fill_article", return_value=True), \
+             patch("fgeo.publishers.wechat._save_draft", return_value="https://mp.weixin.qq.com/draft/1"):
+            sys.modules["playwright.sync_api"] = fake_pw_mod
+            try:
+                result = publish_to_wechat(title="T", html_content="<p>x</p>")
+            finally:
+                sys.modules.pop("playwright.sync_api", None)
+
+        clear_mock.assert_called_once()
+        assert result["status"] == "draft_saved"
+
 
 # ── Additional coverage tests ─────────────────────────────────────────────────
 
@@ -511,7 +597,7 @@ class TestFillArticleExceptionBranches:
         """If page.locator('#author') raises, the exception is swallowed (pass)."""
         from fgeo.publishers.wechat import _fill_article
 
-        page = _make_mock_page(iframe_editor=True)
+        page = _make_mock_page()
         original_locator = page.locator
 
         def _locator_raise_on_author(selector: str):
@@ -528,11 +614,11 @@ class TestFillArticleExceptionBranches:
         """If the digest locator raises, the exception is swallowed (pass)."""
         from fgeo.publishers.wechat import _fill_article
 
-        page = _make_mock_page(iframe_editor=True)
+        page = _make_mock_page()
         original_locator = page.locator
 
         def _locator_raise_on_digest(selector: str):
-            if "textarea" in selector:
+            if "js_description" in selector:
                 raise RuntimeError("digest field missing")
             return original_locator(selector)
 

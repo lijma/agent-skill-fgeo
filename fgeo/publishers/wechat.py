@@ -28,6 +28,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from rich.console import Console
 
@@ -54,6 +55,13 @@ def _save_cookies(cookies: list[dict]) -> None:
     _ensure_data_dir()
     COOKIES_FILE.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
     console.print(f"[dim]Cookies saved to {COOKIES_FILE}[/dim]")
+
+
+def _clear_cookies() -> None:
+    """Delete saved cookies (call when session is known to be expired)."""
+    if COOKIES_FILE.exists():
+        COOKIES_FILE.unlink()
+        console.print("[dim]Stale cookies cleared.[/dim]")
 
 
 def _load_cookies() -> list[dict] | None:
@@ -136,29 +144,81 @@ def _login_with_qr(page: Any) -> bool:
         return False
 
 
+# Phrases that appear in the page body when the WeChat session has expired.
+_SESSION_EXPIRED_TEXTS = [
+    "Login timeout",
+    "login timeout",
+    "请重新登录",
+    "登录超时",
+    "log in again",
+    "Log in again",
+]
+
+
 def _is_logged_in(page: Any) -> bool:
-    """Check if we're currently logged in by visiting the home page."""
+    """Check if we're currently logged in by visiting the home page.
+
+    Checks both the URL (redirect to loginpage) *and* the page body text
+    (WeChat sometimes shows a 'Login timeout' message without redirecting).
+    """
     try:
         page.goto(MP_HOME, wait_until="networkidle", timeout=15000)
         time.sleep(1)
-        # If we're redirected to login page, we're not logged in
         current_url = page.url
-        return "loginpage" not in current_url and "login" not in current_url
+        if "loginpage" in current_url or "login" in current_url:
+            return False
+        # Even if URL looks fine, check for in-page session-expired messages
+        try:
+            body_text = page.inner_text("body", timeout=5000)
+            if any(phrase in body_text for phrase in _SESSION_EXPIRED_TEXTS):
+                console.print("[yellow]Session expired (detected in page content).[/yellow]")
+                return False
+        except Exception:
+            pass  # Can't read body — assume logged in and let later steps fail naturally
+        return True
     except Exception:
         return False
 
 
-def _navigate_to_editor(page: Any) -> bool:
+def _extract_token(url: str) -> str:
+    """Extract the WeChat MP session token from a URL query string.
+
+    After login, WeChat redirects to a URL like:
+      https://mp.weixin.qq.com/cgi-bin/home?t=home/index&token=862082663
+    All subsequent page URLs must include this token or the server will
+    redirect back to the login page.
+
+    Returns the token string, or empty string if not found.
+    """
+    try:
+        qs = parse_qs(urlparse(url).query)
+        return qs.get("token", [""])[0]
+    except Exception:
+        return ""
+
+
+def _navigate_to_editor(page: Any, token: str = "") -> bool:
     """Navigate to the article creation editor.
 
-    Returns True if the editor is ready for input.
+    Args:
+        page: Playwright page object.
+        token: WeChat MP session token extracted from the post-login URL.
+               Must be provided, otherwise the server redirects to login.
+
+    Returns True if the editor loaded successfully.
     """
-    # Go to article creation page
-    # mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77
-    editor_url = f"{MP_BASE}/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77"
+    if not token:
+        console.print("[yellow]No session token available — editor URL may redirect to login.[/yellow]")
+    token_param = f"&token={token}" if token else ""
+    editor_url = f"{MP_BASE}/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=77{token_param}"
+    console.print(f"[dim]Navigating to editor (token={'***' if token else 'none'})...[/dim]")
     try:
         page.goto(editor_url, wait_until="networkidle", timeout=30000)
         time.sleep(2)
+        # Verify we didn't get redirected back to login
+        if "loginpage" in page.url or "login" in page.url:
+            console.print("[red]Editor navigation redirected to login — session may have expired.[/red]")
+            return False
         return True
     except Exception as exc:
         console.print(f"[red]Failed to navigate to editor:[/red] {exc}")
@@ -200,71 +260,60 @@ _CLIPBOARD_PASTE_JS = """
 
 
 def _fill_article(page: Any, title: str, html_content: str, author: str = "", digest: str = "") -> bool:
-    """Fill in the article editor with title, content, and metadata.
+    """Fill in the WeChat MP article editor.
 
-    Uses ClipboardEvent paste for HTML content to work cleanly with
-    ProseMirror / UEditor rich-text editors, with innerHTML as fallback.
-    Returns True if all fields were set successfully.
+    Selectors confirmed from live DOM (2026-03):
+      - Title:   textarea#title
+      - Author:  input#author
+      - Editor:  #ueditor_0 .ProseMirror[contenteditable="true"]  (mock-iframe div, NOT a real iframe)
+      - Digest:  textarea#js_description
+
+    Uses ClipboardEvent paste for HTML content; falls back to innerHTML + input event.
+    Returns True if all required fields were set successfully.
     """
     try:
-        # Set title
+        # ── Title ─────────────────────────────────────────────────────────────
         console.print("[dim]Setting article title...[/dim]")
-        title_input = page.locator("#title")
+        title_input = page.locator("textarea#title")
         title_input.wait_for(state="visible", timeout=10000)
+        title_input.click()
         title_input.fill(title)
         time.sleep(0.5)
 
-        # Set author if provided
+        # ── Author (optional) ─────────────────────────────────────────────────
         if author:
             try:
                 author_input = page.locator("#author")
                 if author_input.is_visible():
+                    author_input.click()
                     author_input.fill(author)
                     time.sleep(0.3)
             except Exception:
-                pass  # Author field may not be visible
+                pass
 
-        # Set content via the rich editor
-        # WeChat MP editor uses an editable iframe/div for rich content
+        # ── Content (ProseMirror inside mock-iframe div) ───────────────────────
+        # #ueditor_0 is a *div* styled as mock-iframe — page.frame_locator() won't work.
+        # Target the ProseMirror contenteditable div directly.
         console.print("[dim]Inserting article content via ClipboardEvent paste...[/dim]")
-
-        injection_method: str | None = None
-
-        # Strategy 1: iframe-based UEditor (#ueditor_0)
         try:
-            frame_locator = page.frame_locator("#ueditor_0")
-            editor_body = frame_locator.locator("body")
-            editor_body.wait_for(state="visible", timeout=5000)
-            injection_method = editor_body.evaluate(
-                _CLIPBOARD_PASTE_JS,
-                html_content,
-            )
-        except Exception:
-            pass
-
-        # Strategy 2: div-based editor (ProseMirror / contenteditable)
-        if injection_method is None:
-            try:
-                editor_div = page.locator(
-                    ".ProseMirror, .edui-body-container, [contenteditable='true']"
-                ).first
-                editor_div.wait_for(state="visible", timeout=5000)
-                injection_method = editor_div.evaluate(
-                    _CLIPBOARD_PASTE_JS,
-                    html_content,
-                )
-            except Exception as exc:
-                console.print(f"[red]Failed to find editor element:[/red] {exc}")
-                return False
+            editor = page.locator("#ueditor_0 .ProseMirror[contenteditable='true']")
+            editor.wait_for(state="visible", timeout=10000)
+            editor.click()  # focus the editor first
+            time.sleep(0.3)
+            injection_method = editor.evaluate(_CLIPBOARD_PASTE_JS, html_content)
+        except Exception as exc:
+            console.print(f"[red]Failed to inject content into editor:[/red] {exc}")
+            return False
 
         time.sleep(1)
         console.print(f"[dim]Content injected via {injection_method}[/dim]")
 
-        # Set digest (摘要) if provided
+        # ── Digest / 摘要 (optional) ────────────────────────────────────────────
         if digest:
             try:
-                digest_input = page.locator("textarea.weui-desktop-form__textarea").first
+                digest_input = page.locator("textarea#js_description")
                 if digest_input.is_visible():
+                    digest_input.click()
                     digest_input.fill(digest)
             except Exception:
                 pass
@@ -278,17 +327,18 @@ def _fill_article(page: Any, title: str, html_content: str, author: str = "", di
 
 
 def _save_draft(page: Any) -> str:
-    """Click the save draft button and return any confirmation URL.
+    """Click the '保存为草稿' button and return the resulting page URL.
 
-    Returns the draft URL or empty string.
+    Confirmed selector from live DOM: #js_submit button
+    Returns the URL after saving, or empty string on failure.
     """
     try:
-        # Look for the save/draft button
-        save_btn = page.locator("button:has-text('保存'), a:has-text('保存草稿')").first
-        if save_btn.is_visible():
-            save_btn.click()
-            time.sleep(3)
-            console.print("[green]✓ Draft saved[/green]")
+        # #js_submit > button contains the text '保存为草稿'
+        save_btn = page.locator("#js_submit button")
+        save_btn.wait_for(state="visible", timeout=10000)
+        save_btn.click()
+        time.sleep(3)
+        console.print("[green]✓ Draft saved[/green]")
         return page.url
     except Exception as exc:
         console.print(f"[yellow]Could not auto-save draft:[/yellow] {exc}")
@@ -354,10 +404,15 @@ def publish_to_wechat(
         page = context.new_page()
 
         try:
-            # Check if we're logged in
+            # Check if we're logged in (URL + page-content check)
             if not _is_logged_in(page):
+                if saved_cookies:
+                    # Cookies were stale — remove them so next run starts fresh
+                    _clear_cookies()
+                    console.print("[yellow]Saved session expired. A new QR login is required.[/yellow]")
+
                 if launch_headless:
-                    # Need QR scan — must relaunch in headed mode
+                    # QR scan requires a visible browser — relaunch headed
                     browser.close()
                     browser = p.chromium.launch(headless=False)
                     context = browser.new_context(
@@ -369,11 +424,20 @@ def publish_to_wechat(
                     result["message"] = "Login failed or timed out"
                     return result
 
-                # Save cookies after successful login
+                # Save fresh cookies after successful QR login
                 _save_cookies(context.cookies())
 
+            # Extract the session token from the current page URL.
+            # WeChat MP requires ?token=XXXXXX on every admin page URL;
+            # without it the server redirects back to the login page.
+            session_token = _extract_token(page.url)
+            if session_token:
+                console.print(f"[dim]Session token: {session_token}[/dim]")
+            else:
+                console.print("[yellow]Could not extract session token from URL — trying without.[/yellow]")
+
             # Navigate to article editor
-            if not _navigate_to_editor(page):
+            if not _navigate_to_editor(page, token=session_token):
                 result["message"] = "Failed to navigate to editor"
                 return result
 
