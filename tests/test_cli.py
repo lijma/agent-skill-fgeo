@@ -1449,8 +1449,8 @@ def _make_fake_atproto(post_uri: str = "at://did:plc:abc123/app.bsky.feed.post/r
         def login(self, handle, pw):
             pass
 
-        def send_post(self, text, embed=None):
-            return type("Resp", (), {"uri": _uri})()
+        def send_post(self, text, embed=None, reply_to=None, facets=None):
+            return type("Resp", (), {"uri": _uri, "cid": "fakecid123"})()
 
     class _Models:
         class AppBskyEmbedExternal:
@@ -1460,6 +1460,34 @@ def _make_fake_atproto(post_uri: str = "at://did:plc:abc123/app.bsky.feed.post/r
 
             class External:
                 def __init__(self, uri="", title="", description=""):
+                    pass
+
+        class ComAtprotoRepoStrongRef:
+            class Main:
+                def __init__(self, cid="", uri=""):
+                    self.cid = cid
+                    self.uri = uri
+
+        class AppBskyFeedPost:
+            class ReplyRef:
+                def __init__(self, root=None, parent=None):
+                    pass
+
+        class AppBskyRichtextFacet:
+            class Main:
+                def __init__(self, index=None, features=None):
+                    pass
+
+            class ByteSlice:
+                def __init__(self, byte_start=0, byte_end=0):
+                    pass
+
+            class Link:
+                def __init__(self, uri=""):
+                    pass
+
+            class Tag:
+                def __init__(self, tag=""):
                     pass
 
     fake.Client = _Client
@@ -1518,6 +1546,107 @@ class TestExtractBskyText:
         assert "*" not in result
         assert "`" not in result
         assert "[link]" not in result
+
+
+class TestSplitBskyThread:
+    """Unit tests for _split_bsky_thread helper."""
+
+    def test_single_paragraph_returns_one_post(self, tmp_path: Path):
+        from fgeo.commands.publish import _split_bsky_thread
+        f = tmp_path / "a.md"
+        f.write_text("---\nplatform: bluesky\n---\n\nThis is a single paragraph.\n")
+        result = _split_bsky_thread(f)
+        assert len(result) == 1
+        assert "single paragraph" in result[0]
+
+    def test_two_short_paragraphs_merged_into_one_post(self, tmp_path: Path):
+        from fgeo.commands.publish import _split_bsky_thread
+        f = tmp_path / "b.md"
+        f.write_text(
+            "---\nplatform: bluesky\n---\n\n"
+            "First paragraph here.\n\n"
+            "Second paragraph here.\n"
+        )
+        result = _split_bsky_thread(f)
+        # Two short paragraphs merge into ONE post (max 2 paras per post)
+        assert len(result) == 1
+        assert "First" in result[0]
+        assert "Second" in result[0]
+
+    def test_three_paragraphs_split_two_then_one(self, tmp_path: Path):
+        from fgeo.commands.publish import _split_bsky_thread
+        f = tmp_path / "c2.md"
+        f.write_text(
+            "---\nplatform: bluesky\n---\n\n"
+            "First paragraph here.\n\n"
+            "Second paragraph here.\n\n"
+            "Third paragraph here.\n"
+        )
+        result = _split_bsky_thread(f)
+        # 3 paras with max 2 per post → 2 posts (first+second, third)
+        assert len(result) == 2
+        assert "First" in result[0]
+        assert "Second" in result[0]
+        assert "Third" in result[1]
+
+    def test_long_paragraph_split_by_sentences(self, tmp_path: Path):
+        from fgeo.commands.publish import _split_bsky_thread
+        f = tmp_path / "c.md"
+        long_para = "This is sentence one. " * 8 + "This is sentence two."
+        f.write_text(f"---\nplatform: bluesky\n---\n\n{long_para}\n")
+        result = _split_bsky_thread(f, max_graphemes=100)
+        assert len(result) > 1
+        for post in result:
+            assert len(post) <= 100
+
+    def test_empty_file_returns_fallback(self, tmp_path: Path):
+        from fgeo.commands.publish import _split_bsky_thread
+        f = tmp_path / "d.md"
+        f.write_text("---\nplatform: bluesky\n---\n")
+        result = _split_bsky_thread(f)
+        assert result == ["(empty)"]
+
+    def test_strips_markdown_formatting(self, tmp_path: Path):
+        from fgeo.commands.publish import _split_bsky_thread
+        f = tmp_path / "e.md"
+        f.write_text("---\nplatform: bluesky\n---\n\n**Bold text** and *italic*.\n")
+        result = _split_bsky_thread(f)
+        assert "**" not in result[0]
+        assert "*" not in result[0]
+        assert "Bold text" in result[0]
+
+
+class TestBuildFacets:
+    """Unit tests for _build_facets helper."""
+
+    def _fake_models(self):
+        return _make_fake_atproto().models
+
+    def test_url_produces_link_facet(self):
+        from fgeo.commands.publish import _build_facets
+        facets = _build_facets("Check this out: https://example.com #cool", self._fake_models())
+        assert len(facets) >= 1
+
+    def test_hashtag_produces_tag_facet(self):
+        from fgeo.commands.publish import _build_facets
+        facets = _build_facets("Hello world #OpenSource #Python", self._fake_models())
+        assert len(facets) == 2
+
+    def test_no_urls_or_tags_returns_empty(self):
+        from fgeo.commands.publish import _build_facets
+        facets = _build_facets("Plain text with no links or hashtags.", self._fake_models())
+        assert facets == []
+
+    def test_url_with_trailing_punctuation_stripped(self):
+        from fgeo.commands.publish import _build_facets
+        facets = _build_facets("See https://example.com.", self._fake_models())
+        assert len(facets) == 1
+
+    def test_long_hashtag_ignored(self):
+        from fgeo.commands.publish import _build_facets
+        long_tag = "#" + "a" * 65  # > 66 chars
+        facets = _build_facets(long_tag, self._fake_models())
+        assert facets == []
 
 
 class TestPublishBskyFlow:
@@ -1613,15 +1742,92 @@ class TestPublishBskyFlow:
         show = runner.invoke(app, ["content", "show", content_id])
         assert "published" in show.output
 
-    def test_publish_bsky_with_published_url_builds_embed(
+    def test_publish_bsky_native_short_sends_single_post(
         self, fgeo_home: Path, tmp_path: Path, monkeypatch
     ):
-        """When content has a published_url, the post should include an embed."""
+        """Short native Bluesky content (within 295 graphemes) is sent as one post."""
         monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
-        content_id, src = self._register_bsky_content(fgeo_home, tmp_path)
-        # Set an existing published_url (e.g. from a previous blog publish)
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "bsky_handle", self.BSKY_HANDLE])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "platform_secret", self.APP_PASSWORD])
+        src = tmp_path / "short.md"
+        src.write_text(
+            "---\ntitle: Short Post\nplatform: bluesky\n---\n\n"
+            "Short punchy hook.\n\n"
+            "One more line with a link https://example.com #OpenSource\n"
+        )
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "bskyproj", "--platform", "bluesky"])
+        content_id = _extract_id(reg.output, "cont")
+
+        import sys
+        sent_posts = []
+
+        class _TrackingClient:
+            def login(self, h, p): pass
+            def send_post(self, text, embed=None, reply_to=None, facets=None):
+                sent_posts.append(text)
+                return type("R", (), {"uri": self.POST_URI, "cid": "fakecid"})()
+
+        _TrackingClient.POST_URI = self.POST_URI
+        sys.modules["atproto"].Client = _TrackingClient
+
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert len(sent_posts) == 1  # single post, not a thread
+
+    def test_publish_bsky_too_long_content_exits_1(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """Content exceeding 295 graphemes is rejected with a helpful error."""
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "bsky_handle", self.BSKY_HANDLE])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "platform_secret", self.APP_PASSWORD])
+        src = tmp_path / "long.md"
+        # 300+ grapheme body
+        long_body = "This is a very long bluesky post that exceeds the grapheme limit. " * 5
+        src.write_text(f"---\ntitle: Long Post\nplatform: bluesky\n---\n\n{long_body}\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "bskyproj", "--platform", "bluesky"])
+        content_id = _extract_id(reg.output, "cont")
+
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "too long" in result.output.lower() or "grapheme" in result.output.lower()
+        assert "295" in result.output
+
+    def test_publish_bsky_with_url_in_text_builds_embed(
+        self, fgeo_home: Path, tmp_path: Path, monkeypatch
+    ):
+        """When post text contains a URL, the embed card should link to that URL (not published_url)."""
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        runner.invoke(app, ["project", "create", "bskyproj"])
+        runner.invoke(app, ["platform", "add", "bskyproj", "bluesky"])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "bsky_handle", self.BSKY_HANDLE])
+        runner.invoke(app, ["platform", "set", "bskyproj", "bluesky",
+                            "platform_secret", self.APP_PASSWORD])
+        src = tmp_path / "url_post.md"
+        src.write_text(
+            "---\ntitle: Link Post\n---\n\n"
+            "Check out my project!\n\n"
+            "https://github.com/user/repo\n#AI #OpenSource\n"
+        )
+        reg = runner.invoke(app, [
+            "content", "register", str(src),
+            "--project", "bskyproj", "--platform", "bluesky",
+        ])
+        content_id = _extract_id(reg.output, "cont")
+        # Even if published_url is set to a bsky URL, the embed should use the URL from the text
         runner.invoke(app, ["content", "set", content_id,
-                            "published_url", "https://example.com/my-post"])
+                            "published_url", "https://bsky.app/profile/test/post/old"])
         result = runner.invoke(app, ["publish", "content", content_id])
         assert result.exit_code == 0
 
@@ -1635,8 +1841,8 @@ class TestPublishBskyFlow:
 
         class _ShortUriClient:
             def login(self, h, p): pass
-            def send_post(self, text, embed=None):
-                return type("R", (), {"uri": "at://short"})()
+            def send_post(self, text, embed=None, reply_to=None, facets=None):
+                return type("R", (), {"uri": "at://short", "cid": "fakecid"})()
 
         sys.modules["atproto"].Client = _ShortUriClient
         result = runner.invoke(app, ["publish", "content", content_id])

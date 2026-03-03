@@ -26,6 +26,10 @@ publish_app.add_typer(task_app, name="task")
 BLOG_PLATFORM = "blog"
 BSKY_PLATFORM = "bluesky"
 
+# Bluesky hard limit: 300 graphemes per post.
+# We use 295 as a safe margin. Content exceeding this is rejected at publish time.
+BSKY_MAX_GRAPHEMES = 295
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -74,17 +78,33 @@ def _git_remote_to_web_url(remote: str) -> str:
 
 # ── Bluesky flow ──────────────────────────────────────────────────────────────
 
+def _strip_md(text: str) -> str:
+    """Strip common Markdown formatting from text."""
+    text = re.sub(r"#+ ", "", text)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.*?)\*", r"\1", text)
+    text = re.sub(r"`(.*?)`", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    text = re.sub(r"<!-- more -->", "", text)
+    return text
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Strip YAML frontmatter (--- ... ---) from text."""
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        return parts[2] if len(parts) >= 3 else text
+    return text
+
+
 def _extract_bsky_text(src: Path, max_chars: int = 270) -> str:
     """Extract a clean text snippet from a Markdown article for Bluesky posting.
 
     Strips YAML frontmatter and Markdown formatting. Prefers the '太长不读' paragraph.
+    Used when cross-posting a long-form article to Bluesky (snippet-only mode).
     """
     text = src.read_text(encoding="utf-8")
-
-    # Strip YAML frontmatter (--- ... ---)
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        text = parts[2] if len(parts) >= 3 else text
+    text = _strip_frontmatter(text)
 
     # Try to find a TLDR block (太长不读)
     tldr_match = re.search(r"\*\*太长不读\*\*[：:](.*?)(?:\n\n|\Z)", text, re.DOTALL)
@@ -95,16 +115,124 @@ def _extract_bsky_text(src: Path, max_chars: int = 270) -> str:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
         snippet = paragraphs[0] if paragraphs else text
 
-    # Strip common Markdown formatting
-    snippet = re.sub(r"#+ ", "", snippet)
-    snippet = re.sub(r"\*\*(.*?)\*\*", r"\1", snippet)
-    snippet = re.sub(r"\*(.*?)\*", r"\1", snippet)
-    snippet = re.sub(r"`(.*?)`", r"\1", snippet)
-    snippet = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", snippet)
-    snippet = re.sub(r"<!-- more -->", "", snippet)
+    snippet = _strip_md(snippet)
     snippet = " ".join(snippet.split())  # normalise whitespace
-
     return snippet[:max_chars].rstrip()
+
+
+def _graphemes(text: str) -> int:
+    """Count grapheme clusters (approximated as Unicode codepoints for BMP text).
+
+    Bluesky's 300-grapheme limit rarely involves multi-codepoint graphemes for
+    typical Latin/CJK content, so len() is a safe approximation.
+    """
+    return len(text)
+
+
+def _split_bsky_thread(src: Path, max_graphemes: int = 295, max_paras: int = 2) -> list[str]:
+    """Split Markdown content into Bluesky posts respecting grapheme and paragraph limits.
+
+    Rules (per Bluesky style guide):
+    - Each post ≤ max_graphemes graphemes (Bluesky hard limit is 300)
+    - Each post contains at most max_paras paragraphs (default 2)
+    - Paragraphs are greedily merged within both limits
+    - Long single paragraphs are split by sentence boundaries
+    """
+    text = src.read_text(encoding="utf-8")
+    text = _strip_frontmatter(text)
+    text = _strip_md(text)
+
+    paragraphs = [" ".join(p.split()) for p in text.split("\n\n") if p.strip()]
+
+    # Expand paragraphs that are too long into sentence-level chunks
+    chunks: list[str] = []
+    for para in paragraphs:
+        if _graphemes(para) <= max_graphemes:
+            chunks.append(para)
+        else:
+            sentences = re.split(r"(?<=[.!?])\s+", para)
+            current = ""
+            for sentence in sentences:
+                candidate = (current + " " + sentence).strip() if current else sentence
+                if _graphemes(candidate) <= max_graphemes:
+                    current = candidate
+                else:
+                    if current:
+                        chunks.append(current)
+                    current = sentence[:max_graphemes].rstrip()
+            if current:
+                chunks.append(current)
+
+    # Greedy merge: keep adding chunks to current post while limits allow
+    posts: list[str] = []
+    current_post = ""
+    current_para_count = 0
+    for chunk in chunks:
+        separator = "\n\n" if current_post else ""
+        candidate = current_post + separator + chunk
+        if current_post and (
+            _graphemes(candidate) > max_graphemes or current_para_count >= max_paras
+        ):
+            posts.append(current_post)
+            current_post = chunk
+            current_para_count = 1
+        else:
+            current_post = candidate
+            current_para_count += 1
+    if current_post:
+        posts.append(current_post)
+
+    return posts if posts else ["(empty)"]
+
+
+def _build_facets(text: str, bsky_models) -> list:  # noqa: ANN001
+    """Build Bluesky rich-text facets for URLs and hashtags found in text.
+
+    Facet byte offsets use UTF-8 encoding as required by the AT Protocol.
+    Supports:
+    - app.bsky.richtext.facet#link  — for https?:// URLs
+    - app.bsky.richtext.facet#tag   — for #hashtags
+    """
+    facets = []
+
+    def _byte_offsets(match_start: int, match_end: int) -> tuple[int, int]:
+        return (
+            len(text[:match_start].encode("utf-8")),
+            len(text[:match_end].encode("utf-8")),
+        )
+
+    # URLs
+    for m in re.finditer(r"https?://[^\s>\)\]]+", text):
+        url = m.group(0).rstrip(".,;!?")
+        byte_start, byte_end = _byte_offsets(m.start(), m.start() + len(url))
+        facets.append(
+            bsky_models.AppBskyRichtextFacet.Main(
+                index=bsky_models.AppBskyRichtextFacet.ByteSlice(
+                    byte_start=byte_start, byte_end=byte_end
+                ),
+                features=[bsky_models.AppBskyRichtextFacet.Link(uri=url)],
+            )
+        )
+
+    # Hashtags
+    for m in re.finditer(r"(?:^|\s)(#[^\d\s]\S*)", text):
+        tag_with_hash = m.group(1).rstrip(".,;!?")
+        tag = tag_with_hash.lstrip("#")
+        if not tag or len(tag_with_hash) >= 66:
+            continue
+        start = m.start(1)
+        end = start + len(tag_with_hash)
+        byte_start, byte_end = _byte_offsets(start, end)
+        facets.append(
+            bsky_models.AppBskyRichtextFacet.Main(
+                index=bsky_models.AppBskyRichtextFacet.ByteSlice(
+                    byte_start=byte_start, byte_end=byte_end
+                ),
+                features=[bsky_models.AppBskyRichtextFacet.Tag(tag=tag)],
+            )
+        )
+
+    return facets
 
 
 def _publish_bsky(
@@ -129,7 +257,25 @@ def _publish_bsky(
     task_dir = FGEO_HOME / "publish" / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    text = _extract_bsky_text(src)
+    # Build the post text (strip frontmatter + Markdown)
+    raw = src.read_text(encoding="utf-8")
+    post_text = _strip_md(_strip_frontmatter(raw)).strip()
+    # Collapse excessive blank lines but keep paragraph breaks
+    post_text = re.sub(r"\n{3,}", "\n\n", post_text).strip()
+
+    # ── Length validation ────────────────────────────────────────────────────
+    total_graphemes = _graphemes(post_text)
+    if total_graphemes > BSKY_MAX_GRAPHEMES:
+        console.print(
+            f"[red]✗ Content too long for Bluesky[/red]\n"
+            f"  Current length : [bold]{total_graphemes}[/bold] graphemes\n"
+            f"  Limit          : [bold]{BSKY_MAX_GRAPHEMES}[/bold] graphemes\n\n"
+            f"Bluesky is like 朋友圈 — keep it short and punchy.\n"
+            f"Please trim your content and try again."
+        )
+        raise typer.Exit(1)
+    # ─────────────────────────────────────────────────────────────────────────
+
 
     client = Client()
     console.print(f"[dim]Logging in to Bluesky as {bsky_handle} …[/dim]")
@@ -139,21 +285,28 @@ def _publish_bsky(
         console.print(f"[red]Bluesky login failed:[/red] {exc}")
         raise typer.Exit(1)
 
-    # Build external link embed when a published_url exists (e.g. a blog post)
+    # Build external link embed from the first URL found in the post text.
+    # Previously this used content["published_url"], which could be wrong
+    # (e.g. a previous bsky post URL), causing the embed to link to itself.
     embed = None
-    published_url = content.get("published_url") or ""
-    if published_url and published_url.startswith("http"):
+    url_match = re.search(r"https?://[^\s>\)\]]+", post_text)
+    if url_match:
+        embed_url = url_match.group(0).rstrip(".,;!?")
+        # Build description from text AFTER the URL (or before), excluding the URL itself
+        embed_desc = re.sub(r"https?://[^\s>\)\]]+", "", post_text).strip()
+        embed_desc = " ".join(embed_desc.split())[:200]
         embed = bsky_models.AppBskyEmbedExternal.Main(
             external=bsky_models.AppBskyEmbedExternal.External(
-                uri=published_url,
+                uri=embed_url,
                 title=title,
-                description=text[:200],
+                description=embed_desc,
             )
         )
 
     console.print("[dim]Sending post …[/dim]")
     try:
-        response = client.send_post(text=text, embed=embed)
+        facets = _build_facets(post_text, bsky_models) or None
+        response = client.send_post(text=post_text, facets=facets, embed=embed)
         post_uri = response.uri
     except Exception as exc:
         console.print(f"[red]Post failed:[/red] {exc}")
