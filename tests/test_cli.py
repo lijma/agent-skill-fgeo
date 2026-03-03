@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -2038,6 +2039,102 @@ class TestContentAssignPlan:
         result = runner.invoke(app, ["content", "set", ids["PostA"], "plan_id", plan["id"]])
         assert result.exit_code == 0
         assert "plan_id" in result.output
+
+
+class TestPublishWechatFlow:
+    """Integration tests for fgeo publish content <公众号-platform>."""
+
+    WECHAT_PLATFORM = "公众号"
+
+    def _register_wechat_content(self, fgeo_home, tmp_path):
+        """Create a 公众号 platform and register a markdown content file."""
+        runner.invoke(app, ["project", "create", "wxproj"])
+        runner.invoke(app, ["platform", "add", "wxproj", self.WECHAT_PLATFORM])
+        src = tmp_path / "article.md"
+        src.write_text(
+            "---\ntitle: WeChat Test\nauthor: Marvin\ndescription: A test.\n---\n\n"
+            "# WeChat Article\n\nThis is the body.\n"
+        )
+        reg = runner.invoke(app, [
+            "content", "register", str(src),
+            "--project", "wxproj",
+            "--platform", self.WECHAT_PLATFORM,
+        ])
+        content_id = _extract_id(reg.output, "cont")
+        return content_id, src
+
+    # ── Guard rails ───────────────────────────────────────────────────────────
+
+    def test_publish_wechat_no_source_path_exits_1(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_wechat_content(fgeo_home, tmp_path)
+        # Blank out source_path so publish sees no file path
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "source" in result.output.lower() or "path" in result.output.lower()
+
+    def test_publish_wechat_source_not_found_exits_1(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_wechat_content(fgeo_home, tmp_path)
+        # Delete the source file so publish can't find it
+        src.unlink()
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower() or "source" in result.output.lower()
+
+    # ── Happy path ────────────────────────────────────────────────────────────
+
+    def test_publish_wechat_happy_path_creates_task(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_wechat_content(fgeo_home, tmp_path)
+
+        with patch("fgeo.publishers.wechat.publish_to_wechat", return_value={
+            "status": "draft_saved",
+            "url": "https://mp.weixin.qq.com/draft/abc123",
+            "message": "Article saved as draft in WeChat MP",
+        }):
+            result = runner.invoke(app, ["publish", "content", content_id])
+
+        assert result.exit_code == 0
+        assert "WeChat" in result.output or "draft" in result.output.lower()
+        task_list = runner.invoke(app, ["publish", "task", "list"])
+        assert "pr_open" in task_list.output
+
+    def test_publish_wechat_failure_exits_1(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_wechat_content(fgeo_home, tmp_path)
+
+        with patch("fgeo.publishers.wechat.publish_to_wechat", return_value={
+            "status": "failed",
+            "url": "",
+            "message": "editor not found",
+        }):
+            result = runner.invoke(app, ["publish", "content", content_id])
+
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower() or "editor" in result.output.lower()
+
+    def test_publish_wechat_converter_import_error(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_wechat_content(fgeo_home, tmp_path)
+
+        import sys
+        # Setting the module to None in sys.modules causes 'from X import Y' to raise ImportError
+        with patch.dict(sys.modules, {"fgeo.converters.wechat_html": None}):
+            result = runner.invoke(app, ["publish", "content", content_id])
+
+        assert result.exit_code == 1
+
+    def test_publish_wechat_playwright_import_error(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_wechat_content(fgeo_home, tmp_path)
+
+        import sys
+        with patch.dict(sys.modules, {"fgeo.publishers.wechat": None}):
+            result = runner.invoke(app, ["publish", "content", content_id])
+
+        assert result.exit_code == 1
 
 
 

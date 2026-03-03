@@ -25,6 +25,7 @@ publish_app.add_typer(task_app, name="task")
 # Platform names with built-in publishing support
 BLOG_PLATFORM = "blog"
 BSKY_PLATFORM = "bluesky"
+WECHAT_PLATFORM = "公众号"
 
 # Bluesky hard limit: 300 graphemes per post.
 # We use 295 as a safe margin. Content exceeding this is rejected at publish time.
@@ -482,6 +483,97 @@ def _publish_blog_local(
     ))
 
 
+# ── WeChat MP (公众号) RPA flow ──────────────────────────────────────────────
+
+def _publish_wechat(
+    db,
+    content: dict,
+    content_id: str,
+    title: str,
+    src: Path,
+    now_iso: str,
+) -> None:
+    """Convert Markdown to WeChat HTML and publish via Playwright RPA."""
+    try:
+        from fgeo.converters.wechat_html import md_to_wechat_html  # noqa: PLC0415
+    except ImportError:
+        console.print("[red]WeChat HTML converter not found.[/red]")
+        raise typer.Exit(1)
+
+    try:
+        from fgeo.publishers.wechat import publish_to_wechat  # noqa: PLC0415
+    except ImportError:
+        console.print(
+            "[red]Playwright not installed.[/red]\n"
+            "Run: [bold]pip install fgeo\\[publish][/bold]\n"
+            "Then: [bold]playwright install chromium[/bold]"
+        )
+        raise typer.Exit(1)
+
+    task_id = _make_task_id(content_id)
+    task_dir = FGEO_HOME / "publish" / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Convert Markdown → WeChat HTML
+    console.print("[dim]Converting Markdown to WeChat HTML…[/dim]")
+    html_content, fm = md_to_wechat_html(src)
+
+    # Save converted HTML for reference
+    html_file = task_dir / "article.html"
+    html_file.write_text(html_content, encoding="utf-8")
+    console.print(f"[dim]HTML saved to {html_file}[/dim]")
+
+    # Step 2: Extract metadata
+    author = fm.get("author", "")
+    digest = fm.get("digest", fm.get("description", ""))
+
+    # Step 3: Publish via Playwright RPA
+    console.print("[bold]Launching browser for WeChat MP…[/bold]")
+    result = publish_to_wechat(
+        title=title,
+        html_content=html_content,
+        author=author,
+        digest=digest,
+        headless=False,
+        save_only=True,
+        task_dir=task_dir,
+    )
+
+    # Step 4: Record publish task
+    platform_id = content.get("platform_id") or ""
+    status = "pr_open" if result["status"] == "draft_saved" else "failed"
+
+    db.create_publish_task(
+        task_id=task_id,
+        content_id=content_id,
+        platform_id=platform_id,
+        repo_url="https://mp.weixin.qq.com",
+        branch="",
+        task_dir=str(task_dir),
+        pr_url=result.get("url", ""),
+        status=status,
+    )
+
+    if status == "pr_open":
+        body = (
+            f"[bold]Task ID:[/bold]   {task_id}\n"
+            f"[bold]HTML:[/bold]      {html_file}\n"
+            f"[bold]Status:[/bold]    draft saved in WeChat MP\n"
+            f"\nArticle is now in your WeChat MP draft box.\n"
+            f"After publishing in WeChat MP, run:\n"
+            f"  [bold]fgeo publish task done {task_id}[/bold]"
+        )
+        console.print(Panel(body, title=f"[green]✓ WeChat MP draft saved[/green] — {title}"))
+    else:
+        db.update_publish_task(task_id, "status", "failed")
+        console.print(
+            f"[red]✗ WeChat publish failed:[/red] {result.get('message', 'unknown error')}\n"
+            f"[dim]HTML file saved at: {html_file}[/dim]\n"
+            f"[dim]You can manually copy the HTML content to mp.weixin.qq.com[/dim]"
+        )
+        raise typer.Exit(1)
+
+
 # ── publish content ───────────────────────────────────────────────────────────
 
 @publish_app.command("content")
@@ -559,6 +651,19 @@ def publish_content(
             raise typer.Exit(1)
 
         _publish_bsky(db, content, content_id, title, src, bsky_handle, app_password, now_iso)
+
+    elif platform_name == WECHAT_PLATFORM:
+        if not source_path:
+            console.print("[red]No source file path recorded for this content.[/red]")
+            console.print(f"Run: [bold]fgeo content set {content_id} source_path <path>[/bold]")
+            raise typer.Exit(1)
+
+        src = Path(source_path)
+        if not src.exists():
+            console.print(f"[red]Source file not found:[/red] {source_path}")
+            raise typer.Exit(1)
+
+        _publish_wechat(db, content, content_id, title, src, now_iso)
 
     else:
         db.update_content(content_id, "status", "published")

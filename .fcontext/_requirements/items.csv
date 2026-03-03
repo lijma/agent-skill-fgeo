@@ -1,2 +1,4 @@
 id,type,title,status,priority,parent,assignee,tags,created,updated,author,source,links
 STORY-001,story,fgeo platform remove 命令,draft,P2,,,,2026-03-01,2026-03-01,,,
+BUG-001,bug,Bluesky embed外链指向错误URL,done,P2,,,,2026-03-03,2026-03-03,,,
+STORY-002,story,微信公众号发布支持,draft,P2,,,,2026-03-03,2026-03-03,,,
