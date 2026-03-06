@@ -26,6 +26,7 @@ publish_app.add_typer(task_app, name="task")
 BLOG_PLATFORM = "blog"
 BSKY_PLATFORM = "bluesky"
 WECHAT_PLATFORM = "公众号"
+MEDIUM_PLATFORM = "medium"
 
 # Bluesky hard limit: 300 graphemes per post.
 # We use 295 as a safe margin. Content exceeding this is rejected at publish time.
@@ -36,7 +37,6 @@ BSKY_MAX_GRAPHEMES = 295
 
 def _date_prefix() -> str:
     return datetime.now().strftime("%Y-%m-%d")
-
 
 def _with_date_prefix(filename: str) -> str:
     """Add YYYY-MM-DD- prefix if not already present."""
@@ -342,6 +342,118 @@ def _publish_bsky(
         f"\nRun [bold]fgeo publish task done {task_id}[/bold] to confirm."
     )
     console.print(Panel(body, title=f"[green]✓ Posted to Bluesky[/green] — {title}"))
+
+
+# ── Medium RPA flow ──────────────────────────────────────────────────────────
+
+def _publish_medium(
+    db,
+    content: dict,
+    content_id: str,
+    title: str,
+    src: Path,
+    now_iso: str,
+) -> None:
+    """Publish a Markdown article to Medium as a draft via Playwright RPA.
+
+    Flow:
+    1. Launch Playwright (headed if login needed, cookied if session cached).
+    2. Navigate to medium.com/new-story editor.
+    3. Fill title (h3.graf--title) and paste HTML body via ClipboardEvent.
+    4. Wait for Medium auto-save → capture draft URL.
+    5. Create a ``pr_open`` publish task (user manually reviews and publishes on Medium,
+       then runs ``fgeo publish task done <task_id>``).
+    """
+    from fgeo.publishers.medium import publish_to_medium  # noqa: PLC0415
+
+    task_id = _make_task_id(content_id)
+    task_dir = FGEO_HOME / "publish" / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    markdown_content = src.read_text(encoding="utf-8")
+
+    # Pull subtitle + tags from the content record
+    subtitle = content.get("description") or ""
+    raw_tags = content.get("tags") or ""
+    tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
+    console.print("[bold]Publishing to Medium via browser …[/bold]")
+    result = publish_to_medium(
+        title=title,
+        markdown_content=markdown_content,
+        subtitle=subtitle,
+        tags=tags,
+        task_dir=task_dir,
+    )
+
+    platform_id = content.get("platform_id") or ""
+    draft_url = result.get("url", "")
+
+    status = result.get("status", "")
+
+    if status == "failed":
+        console.print(f"[red]Medium publish failed:[/red] {result.get('message', 'unknown error')}")
+        db.create_publish_task(
+            task_id=task_id,
+            content_id=content_id,
+            platform_id=platform_id,
+            repo_url="https://medium.com",
+            branch="",
+            task_dir=str(task_dir),
+            pr_url="",
+            status="failed",
+        )
+        raise typer.Exit(1)
+
+    if status == "published":
+        # Article is live — mark task as merged and content as published
+        db.create_publish_task(
+            task_id=task_id,
+            content_id=content_id,
+            platform_id=platform_id,
+            repo_url="https://medium.com",
+            branch="",
+            task_dir=str(task_dir),
+            pr_url=draft_url,
+            status="merged",
+        )
+        if draft_url:
+            db.update_content(content_id, "published_url", draft_url)
+        db.update_content(content_id, "status", "published")
+        body = (
+            f"[bold]Task ID:[/bold]   {task_id}\n"
+            f"[bold]Status:[/bold]    published\n"
+        )
+        if draft_url:
+            body += f"[bold]URL:[/bold]       {draft_url}\n"
+        console.print(Panel(body, title=f"[green]✓ Published to Medium[/green] — {title}"))
+        return
+
+    # draft_saved — auto-publish failed, user must publish manually
+    db.create_publish_task(
+        task_id=task_id,
+        content_id=content_id,
+        platform_id=platform_id,
+        repo_url="https://medium.com",
+        branch="",
+        task_dir=str(task_dir),
+        pr_url=draft_url,
+        status="pr_open",
+    )
+    if draft_url:
+        db.update_content(content_id, "published_url", draft_url)
+
+    body = (
+        f"[bold]Task ID:[/bold]   {task_id}\n"
+        f"[bold]Status:[/bold]    draft (auto-publish failed — review and publish manually)\n"
+    )
+    if draft_url:
+        body += f"[bold]Draft URL:[/bold] {draft_url}\n"
+    body += (
+        "\nOpen the link above in your browser to publish.\n"
+        f"After publishing, run: [bold]fgeo publish task done {task_id}[/bold]"
+    )
+    console.print(Panel(body, title=f"[yellow]⚠ Draft saved to Medium[/yellow] — {title}"))
 
 
 # ── Blog git-PR flow ──────────────────────────────────────────────────────────
@@ -651,6 +763,29 @@ def publish_content(
             raise typer.Exit(1)
 
         _publish_bsky(db, content, content_id, title, src, bsky_handle, app_password, now_iso)
+
+    elif platform_name == MEDIUM_PLATFORM:
+        if not source_path:
+            console.print("[red]No source file path recorded for this content.[/red]")
+            console.print(f"Run: [bold]fgeo content set {content_id} source_path <path>[/bold]")
+            raise typer.Exit(1)
+
+        src = Path(source_path)
+        if not src.exists():
+            console.print(f"[red]Source file not found:[/red] {source_path}")
+            raise typer.Exit(1)
+
+        if "```mermaid" in src.read_text(encoding="utf-8"):
+            console.print(f"[red]Error: Mermaid diagrams found in Markdown (content: {content_id}).[/red]")
+            console.print("Please replace Mermaid code blocks with rendered images before publishing.")
+            console.print(
+                "建议使用开源制图服务 Kroki.io：用 Python base64/zlib 压缩函数"
+                "将 Mermaid 源码编码成可渲染图片的 URL，"
+                "再把 Markdown 文件里的 ```mermaid 代码块替换成图片引用即可。"
+            )
+            raise typer.Exit(1)
+
+        _publish_medium(db, content, content_id, title, src, now_iso)
 
     elif platform_name == WECHAT_PLATFORM:
         if not source_path:

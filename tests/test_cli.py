@@ -2137,6 +2137,97 @@ class TestPublishWechatFlow:
         assert result.exit_code == 1
 
 
+class TestPublishMediumFlow:
+    """Integration tests for fgeo publish content <medium-platform>."""
+
+    def _register_medium_content(self, fgeo_home, tmp_path, body: str = "# Hello\n\nContent.\n"):
+        runner.invoke(app, ["project", "create", "medproj"])
+        runner.invoke(app, ["platform", "add", "medproj", "medium"])
+        src = tmp_path / "article.md"
+        src.write_text(body)
+        reg = runner.invoke(app, [
+            "content", "register", str(src),
+            "--project", "medproj",
+            "--platform", "medium",
+        ])
+        content_id = _extract_id(reg.output, "cont")
+        return content_id, src
+
+    def test_publish_medium_no_source_path_exits_1(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_medium_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "source" in result.output.lower() or "path" in result.output.lower()
+
+    def test_publish_medium_source_not_found_exits_1(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_medium_content(fgeo_home, tmp_path)
+        src.unlink()
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_medium_mermaid_detected_exits_1(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_medium_content(
+            fgeo_home, tmp_path,
+            body="# Flow\n\n```mermaid\ngraph TD;\nA-->B;\n```\n",
+        )
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "Mermaid" in result.output
+        assert "Kroki.io" in result.output
+
+    def test_publish_medium_no_mermaid_calls_publisher(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_medium_content(fgeo_home, tmp_path)
+        with patch("fgeo.publishers.medium.publish_to_medium", return_value={
+            "status": "draft_saved",
+            "url": "https://medium.com/p/abc123",
+            "message": "draft saved",
+        }):
+            result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "Medium" in result.output or "draft" in result.output.lower()
+        task_list = runner.invoke(app, ["publish", "task", "list"])
+        assert "pr_open" in task_list.output
+
+    def test_publish_medium_publisher_failure_exits_1(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_medium_content(fgeo_home, tmp_path)
+        with patch("fgeo.publishers.medium.publish_to_medium", return_value={
+            "status": "failed",
+            "url": "",
+            "message": "browser not available",
+        }):
+            result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower() or "browser" in result.output.lower()
+
+    def test_publish_medium_published_status_creates_merged_task(self, fgeo_home, tmp_path, monkeypatch):
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        content_id, src = self._register_medium_content(fgeo_home, tmp_path)
+        with patch("fgeo.publishers.medium.publish_to_medium", return_value={
+            "status": "published",
+            "url": "https://medium.com/p/live123",
+            "message": "published",
+        }):
+            result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "published" in result.output.lower()
+        task_list = runner.invoke(app, ["publish", "task", "list", "--status", "merged"])
+        assert "merged" in task_list.output
+
+    def test_publish_medium_already_published_exits_0(self, fgeo_home, tmp_path, monkeypatch):
+        content_id, src = self._register_medium_content(fgeo_home, tmp_path)
+        runner.invoke(app, ["content", "set", content_id, "status", "published"])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "Already published" in result.output
+
+
 
 
 

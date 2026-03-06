@@ -50,7 +50,7 @@ What counts as strategic (MUST consult):
 What can execute directly (no need to ask):
 - `fgeo project list`, `fgeo status`, `fgeo content list` — read-only queries
 - `fgeo project create` — when user explicitly asks to create a project
-- `fgeo content set <id> status published` — when user says they published something
+- `fgeo content set <id> status published` — ONLY when user reports they have **already** manually published externally (e.g. "我发布了", "已经发了"). This is a status sync, NOT a publish action.
 
 ## Data Model
 
@@ -247,7 +247,8 @@ These are common agent failures that violate the workflow:
 6. **Zero-interaction content delivery** — Agent produces the entire article start-to-finish without a single user reply. This is the worst failure mode.
 7. **File analysis as brand substitute** — Brand is empty, but instead of asking the user questions, Agent reads past writing samples and infers a brand profile. WRONG. File analysis is a supplement AFTER the user answers the 4 questions, never a replacement.
 8. **Save-and-register in one shot** — After draft is confirmed, Agent immediately saves AND registers to fgeo without asking where to save or waiting for user review. WRONG. Always: ask save location (plain chat) → save → wait for review → register only after approval.
-9. **Bypassing CLI with direct DB access** — Agent uses `sqlite3` or raw SQL queries to read/write fgeo data. WRONG. ALL data operations MUST go through `fgeo` CLI commands. If the CLI lacks the capability, follow the Capability Gap protocol below.
+9. **Status-only on publish intent** — User says "发布" or "帮我发布", Agent only runs `fgeo content set <id> status published` without calling `fgeo publish content <id>`. WRONG. "发布" as a request means run the actual publish command. Only use `content set status published` when the user reports they already published manually.
+10. **Bypassing CLI with direct DB access** — Agent uses `sqlite3` or raw SQL queries to read/write fgeo data. WRONG. ALL data operations MUST go through `fgeo` CLI commands. If the CLI lacks the capability, follow the Capability Gap protocol below.
 
 ## ⚠️ Capability Gap Protocol
 
@@ -306,7 +307,8 @@ Never choose a backup that modifies data outside of `fgeo` CLI.
 ### Content
 - **User finishes writing** → `fgeo content register <file> --project <p> --platform <pl> --direction <d>`
 - **User asks what to write next** → check plan gaps via `fgeo status`, suggest topics for underserved platforms
-- **User publishes content** → `fgeo content set <id> status published`
+- **User says "发布" / "帮我发布" / "publish this"** (intent: wants agent to perform publishing) → follow the platform-specific publish flow: run `fgeo publish content <id>` (see Blog/Medium/Bluesky Publish Flow sections). Do NOT just update status.
+- **User reports they already published manually** (e.g. "我发布了", "已经发了", "发完了") → `fgeo content set <id> status published` to sync the status.
 - **User asks about content status** → `fgeo content list --project <p> [--platform <pl>] [--status <s>]`
 
 ### Blog Publish Flow (Git PR)
