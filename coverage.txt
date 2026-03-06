@@ -1,0 +1,235 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.2, pytest-9.0.2, pluggy-1.5.0
+rootdir: /Users/ma/Documents/docs/marvintalk/fgeo
+configfile: pyproject.toml
+plugins: anyio-4.11.0, cov-7.0.0
+collected 472 items
+
+tests/test_cli.py ...................................................... [ 11%]
+........................................................................ [ 26%]
+...............
+
+=============================== warnings summary ===============================
+tests/test_cli.py::TestPublishCommands::test_publish_list_shows_drafts
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/typing.py:463: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105624f40>
+    def _eval_type(t, globalns, localns, type_params=_sentinel, *, recursive_guard=frozenset()):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_list_filter_by_project
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/enum.py:1152: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105626e30>
+    def __new__(cls, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_list_filter_no_match
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/parser.py:114: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105860f40>
+    if first.isalnum():
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_not_found
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/core.py:2308: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105861120>
+    def convert(value: t.Any) -> t.Any:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_already_published
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/core.py:2359: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x104d49c60>
+    def resolve_envvar_value(self, ctx: Context) -> str | None:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_no_source
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/enum.py:1152: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105860e50>
+    def __new__(cls, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_status_updated
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/enum.py:1152: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058609a0>
+    def __new__(cls, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_dest_exists_no_force
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/parser.py:140: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058605e0>
+    self.prefixes: set[str] = set()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_dest_exists_no_force
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/parser.py:140: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058616c0>
+    self.prefixes: set[str] = set()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_dest_exists_no_force
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/rich/control.py:187: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105567970>
+    def strip_control_codes(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_dest_exists_force
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/gettext.py:589: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105567790>
+    t = translation(domain, _localedirs.get(domain, None))
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_no_workspace_no_blogdir
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/types.py:664: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105567e20>
+    def convert(
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_non_blog
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/parser.py:112: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105861b70>
+    def _split_opt(opt: str) -> tuple[str, str]:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_non_blog_with_url
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/parser.py:112: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058615d0>
+    def _split_opt(opt: str) -> tuple[str, str]:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_filename_already_has_date_prefix
+  <frozen os>:711: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862200>
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_no_platform_id
+  <frozen os>:793: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058604f0>
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishCommands::test_publish_content_blog_via_workspace
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/enum.py:1152: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058624d0>
+    def __new__(cls, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_platform_set_publish_url
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/typing.py:463: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105860130>
+    def _eval_type(t, globalns, localns, type_params=_sentinel, *, recursive_guard=frozenset()):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_content_blog_git_flow_creates_task
+  <string>:0: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105861d50>
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_list_shows_created_task
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/typing.py:1035: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058623e0>
+    code = compile(arg_to_compile, '<string>', 'eval')
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_list_shows_created_task
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/rich/_loop.py:18: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862b60>
+    def loop_last(values: Iterable[T]) -> Iterable[Tuple[bool, T]]:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_list_filter_by_status
+  <frozen codecs>:189: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105861300>
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_show
+  /Users/ma/Documents/docs/marvintalk/fgeo/fgeo/database.py:165: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105860c70>
+    row[1] for row in self.conn.execute("PRAGMA table_info(platforms)").fetchall()
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_show_not_found
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/core.py:2308: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862f20>
+    def convert(value: t.Any) -> t.Any:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_marks_content_published
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/site-packages/click/core.py:2308: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862c50>
+    def convert(value: t.Any) -> t.Any:
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_marks_content_published
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/enum.py:1152: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862d40>
+    def __new__(cls, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_marks_content_published
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/enum.py:1152: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862e30>
+    def __new__(cls, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_idempotent
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/typing.py:1035: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105861e40>
+    code = compile(arg_to_compile, '<string>', 'eval')
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_idempotent
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/typing.py:1035: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862a70>
+    code = compile(arg_to_compile, '<string>', 'eval')
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_idempotent
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/typing.py:1035: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862980>
+    code = compile(arg_to_compile, '<string>', 'eval')
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_idempotent
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/typing.py:1035: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058625c0>
+    code = compile(arg_to_compile, '<string>', 'eval')
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_idempotent
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/inspect.py:3061: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105863010>
+    params = OrderedDict((param.name, param) for param in parameters)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_task_done_not_found
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/copyreg.py:99: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105862890>
+    return cls.__new__(cls, *args)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_content_blog_clone_failure
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/enum.py:1152: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105863d30>
+    def __new__(cls, value):
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_content_blog_push_failure
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/inspect.py:3061: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105863c40>
+    params = OrderedDict((param.name, param) for param in parameters)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_content_blog_force_push
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/inspect.py:2779: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x105863a60>
+    @property
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+tests/test_cli.py::TestPublishBlogGitFlow::test_publish_content_blog_gh_not_installed
+  /usr/local/Caskroom/miniconda/base/lib/python3.13/copyreg.py:99: ResourceWarning: unclosed database in <sqlite3.Connection object at 0x1058634c0>
+    return cls.__new__(cls, *args)
+  Enable tracemalloc to get traceback where the object was allocated.
+  See https://docs.pytest.org/en/stable/how-to/capture-warnings.html#resource-warnings for more info.
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+<string>:0: KeyboardInterrupt
+(to show a full traceback on KeyboardInterrupt use --full-trace)
+====================== 141 passed, 37 warnings in 18.50s =======================
