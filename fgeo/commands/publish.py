@@ -27,6 +27,7 @@ BLOG_PLATFORM = "blog"
 BSKY_PLATFORM = "bluesky"
 WECHAT_PLATFORM = "公众号"
 MEDIUM_PLATFORM = "medium"
+DEVTO_PLATFORM = "devto"
 
 # Bluesky hard limit: 300 graphemes per post.
 # We use 295 as a safe margin. Content exceeding this is rejected at publish time.
@@ -456,6 +457,74 @@ def _publish_medium(
     console.print(Panel(body, title=f"[yellow]⚠ Draft saved to Medium[/yellow] — {title}"))
 
 
+# ── DEV.to API flow ─────────────────────────────────────────────────────────
+
+def _publish_devto(
+    db,
+    content: dict,
+    content_id: str,
+    title: str,
+    src: Path,
+    api_key: str,
+    now_iso: str,
+) -> None:
+    """Publish a Markdown article to DEV.to as a draft via the Forem REST API."""
+    from fgeo.publishers.devto import publish_to_devto  # noqa: PLC0415
+
+    task_id = _make_task_id(content_id)
+    task_dir = FGEO_HOME / "publish" / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    markdown_content = src.read_text(encoding="utf-8")
+    raw_tags = content.get("tags") or ""
+    tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
+
+    result = publish_to_devto(
+        title=title,
+        markdown_content=markdown_content,
+        api_key=api_key,
+        tags=tags,
+    )
+
+    platform_id = content.get("platform_id") or ""
+    draft_url = result.get("url", "")
+
+    if result.get("status") == "failed":
+        console.print(f"[red]DEV.to publish failed:[/red] {result.get('message', 'unknown error')}")
+        db.create_publish_task(
+            task_id=task_id,
+            content_id=content_id,
+            platform_id=platform_id,
+            repo_url="https://dev.to",
+            branch="",
+            task_dir=str(task_dir),
+            pr_url="",
+            status="failed",
+        )
+        raise typer.Exit(1)
+
+    db.create_publish_task(
+        task_id=task_id,
+        content_id=content_id,
+        platform_id=platform_id,
+        repo_url="https://dev.to",
+        branch="",
+        task_dir=str(task_dir),
+        pr_url=draft_url,
+        status="pr_open",
+    )
+    if draft_url:
+        db.update_content(content_id, "published_url", draft_url)
+
+    body = (
+        f"[bold]Task ID:[/bold]   {task_id}\n"
+        f"[bold]Draft URL:[/bold] {draft_url}\n"
+        f"\nOpen the link above on DEV.to to review and publish.\n"
+        f"After publishing, run: [bold]fgeo publish task done {task_id}[/bold]"
+    )
+    console.print(Panel(body, title=f"[green]✓ DEV.to draft created[/green] — {title}"))
+
+
 # ── Blog git-PR flow ──────────────────────────────────────────────────────────
 
 def _publish_blog_git(
@@ -799,6 +868,28 @@ def publish_content(
             raise typer.Exit(1)
 
         _publish_wechat(db, content, content_id, title, src, now_iso)
+
+    elif platform_name == DEVTO_PLATFORM:
+        if not source_path:
+            console.print("[red]No source file path recorded for this content.[/red]")
+            console.print(f"Run: [bold]fgeo content set {content_id} source_path <path>[/bold]")
+            raise typer.Exit(1)
+
+        src = Path(source_path)
+        if not src.exists():
+            console.print(f"[red]Source file not found:[/red] {source_path}")
+            raise typer.Exit(1)
+
+        api_key = platform.get("platform_secret") or ""
+        if not api_key:
+            console.print(
+                "[red]DEV.to API key not set.[/red]\n"
+                "Run: [bold]fgeo platform set <proj> devto platform_secret <api-key>[/bold]\n"
+                "[dim]Get your API key at: https://dev.to/settings/extensions[/dim]"
+            )
+            raise typer.Exit(1)
+
+        _publish_devto(db, content, content_id, title, src, api_key, now_iso)
 
     else:
         db.update_content(content_id, "status", "published")

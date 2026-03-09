@@ -88,12 +88,13 @@ def _strip_frontmatter(text: str) -> str:
 
 def _inline_md(text: str) -> str:
     """Apply inline Markdown formatting: bold, italic, code, links, images."""
-    # Keep external URL images; strip base64/data: images (Medium can't handle them)
+    # Medium always tries to re-upload any <img src="..."> to its own CDN when
+    # content is pasted, which causes "Something went wrong uploading the image"
+    # errors for SVGs, external CDN images, etc.  The only reliable approach is
+    # to strip all images entirely and keep just the alt text as a styled caption.
     def _img(m: re.Match) -> str:
-        alt, url = m.group(1), m.group(2)
-        if url.startswith(("http://", "https://", "/", "./", "../")):
-            return f'<img src="{url}" alt="{alt}" style="max-width:100%">'
-        return alt  # strip data URIs / local paths
+        alt = m.group(1)
+        return f"<em>[图: {alt}]</em>" if alt else ""
     text = re.sub(r"!\[([^\]]*)\]\(([^\)]+)\)", _img, text)
     # Links
     text = re.sub(r"\[([^\]]+)\]\(([^\)]+)\)", r'<a href="\2">\1</a>', text)
@@ -165,7 +166,7 @@ def _md_to_html(md: str) -> str:
             continue
 
         # Pre-rendered code block (from substitution above)
-        if line.startswith("<pre>"):
+        if line.startswith("<pre"):  # catches both <pre> and <pre style=...>
             html_parts.append(line)
             i += 1
             continue

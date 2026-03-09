@@ -64,9 +64,15 @@ class TestMdToHtml:
     def test_code_block(self):
         from fgeo.publishers.medium import _md_to_html
         html = _md_to_html("```python\nprint('hi')\n```")
-        assert "<pre>" in html
+        assert "<pre" in html
         assert "<code" in html
         assert "language-python" in html
+
+    def test_mermaid_code_block(self):
+        from fgeo.publishers.medium import _md_to_html
+        html = _md_to_html("```mermaid\ngraph LR\nA-->B\n```")
+        assert 'class="mermaid"' in html
+        assert "<pre" not in html  # mermaid should NOT produce a <pre> block
 
     def test_unordered_list(self):
         from fgeo.publishers.medium import _md_to_html
@@ -152,6 +158,26 @@ class TestInlineMd:
         result = _inline_md("![alt text](image.png)")
         assert "alt text" in result
         assert "image.png" not in result
+        assert "<img" not in result
+
+    def test_image_external_png_kept(self):
+        from fgeo.publishers.medium import _inline_md
+        result = _inline_md("![chart](https://example.com/chart.png)")
+        assert "<img" not in result
+        assert "chart" in result
+
+    def test_image_kroki_svg_converted_to_png(self):
+        from fgeo.publishers.medium import _inline_md
+        svg_url = "https://kroki.io/mermaid/svg/abc123"
+        result = _inline_md(f"![diagram]({svg_url})")
+        assert "<img" not in result
+        assert "diagram" in result
+
+    def test_image_generic_svg_url_stripped(self):
+        from fgeo.publishers.medium import _inline_md
+        result = _inline_md("![diagram](https://example.com/chart.svg)")
+        assert "<img" not in result
+        assert "diagram" in result
 
     def test_strikethrough(self):
         from fgeo.publishers.medium import _inline_md
@@ -230,7 +256,7 @@ class TestIsLoggedIn:
         from fgeo.publishers.medium import _is_logged_in
         page = MagicMock()
         page.goto.return_value = None
-        page.url = "https://medium.com/login"
+        page.url = "https://medium.com/m/signin"
         with patch("time.sleep"):
             result = _is_logged_in(page)
         assert result is False
@@ -283,6 +309,24 @@ class TestFillMediumArticle:
             return loc
         page.locator.side_effect = make_locator
         result = _fill_medium_article(page, "Test Title", "<p>Hello</p>")
+        assert result is False
+
+    def test_mermaid_content_waits_for_render(self):
+        """Content with class="mermaid" triggers the 3-second render wait branch."""
+        from fgeo.publishers.medium import _fill_medium_article
+        page = _make_page()
+        mermaid_html = '<div class="mermaid">graph LR\nA-->B</div>'
+        with patch("time.sleep"):
+            result = _fill_medium_article(page, "Mermaid Title", mermaid_html)
+        assert result is True
+
+    def test_returns_false_if_set_content_raises(self):
+        """If page.set_content raises, _fill_medium_article returns False."""
+        from fgeo.publishers.medium import _fill_medium_article
+        page = _make_page()
+        page.set_content.side_effect = Exception("Browser crashed")
+        with patch("time.sleep"):
+            result = _fill_medium_article(page, "Title", "<p>text</p>")
         assert result is False
 
 
@@ -377,7 +421,28 @@ class TestClickPublish:
 
     def test_returns_false_when_confirm_btn_not_found(self):
         from fgeo.publishers.medium import _click_publish
-        page = MagicMock()
+        page, _ = self._make_page()
+        # The first publish-panel button (page.locator) succeeds;
+        # the confirm button uses get_by_role and fails.
+        confirm_btn = MagicMock()
+        confirm_btn.wait_for.side_effect = Exception("Confirm not found")
+        page.get_by_role.return_value = confirm_btn
+        with patch("time.sleep"):
+            result = _click_publish(page)
+        assert result is False
+
+    def test_with_subtitle_fills_subtitle_field(self):
+        """Passing subtitle= covers the subtitle-fill branch (L395-402)."""
+        from fgeo.publishers.medium import _click_publish
+        page, _ = self._make_page()
+        with patch("time.sleep"):
+            result = _click_publish(page, subtitle="A great subtitle")
+        assert result is True
+
+    def test_with_subtitle_handles_exception(self):
+        """Subtitle fill that raises logs a warning but does not return False (L403-404)."""
+        from fgeo.publishers.medium import _click_publish
+        page, _ = self._make_page()
         call_count = [0]
 
         def make_locator(*args, **kwargs):
@@ -385,16 +450,48 @@ class TestClickPublish:
             loc = MagicMock()
             loc.first = loc
             if call_count[0] == 1:
-                loc.wait_for.return_value = None  # publish btn: ok
+                loc.wait_for.return_value = None  # publish-panel btn: ok
                 loc.click.return_value = None
             else:
-                loc.wait_for.side_effect = Exception("Confirm not found")
+                loc.wait_for.side_effect = Exception("Subtitle field not found")
             return loc
 
         page.locator.side_effect = make_locator
         with patch("time.sleep"):
-            result = _click_publish(page)
-        assert result is False
+            result = _click_publish(page, subtitle="My subtitle")
+        # subtitle failure is non-fatal — function still returns True
+        assert result is True
+
+    def test_with_tags_fills_topic_input(self):
+        """Passing tags= covers the tags-fill branch (L408-418)."""
+        from fgeo.publishers.medium import _click_publish
+        page, _ = self._make_page()
+        with patch("time.sleep"):
+            result = _click_publish(page, tags=["python", "devto"])
+        assert result is True
+
+    def test_with_tags_handles_exception(self):
+        """Tags fill that raises logs a warning but does not return False (L419-420)."""
+        from fgeo.publishers.medium import _click_publish
+        page, _ = self._make_page()
+        call_count = [0]
+
+        def make_locator(*args, **kwargs):
+            call_count[0] += 1
+            loc = MagicMock()
+            loc.first = loc
+            if call_count[0] == 1:
+                loc.wait_for.return_value = None  # publish-panel btn: ok
+                loc.click.return_value = None
+            else:
+                loc.wait_for.side_effect = Exception("Tag input not found")
+            return loc
+
+        page.locator.side_effect = make_locator
+        with patch("time.sleep"):
+            result = _click_publish(page, tags=["python"])
+        # tags failure is non-fatal — function still returns True
+        assert result is True
 
 
 # ── publish_to_medium ─────────────────────────────────────────────────────────

@@ -1014,16 +1014,100 @@ class TestPublishCommands:
 
     def test_publish_content_non_blog_with_url(self, fgeo_home: Path, tmp_path: Path):
         runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "twitter"])
+        src = tmp_path / "article.md"
+        src.write_text("# Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "twitter"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id,
+                                     "--url", "https://twitter.com/mytweet"])
+        assert result.exit_code == 0
+        assert "https://twitter.com/mytweet" in result.output
+
+    def test_publish_content_devto_no_source_path(self, fgeo_home: Path, tmp_path: Path):
+        """Covers devto branch: no source_path → error and exit 1."""
+        runner.invoke(app, ["project", "create", "myproj"])
         runner.invoke(app, ["platform", "add", "myproj", "devto"])
         src = tmp_path / "article.md"
         src.write_text("# Article\n")
         reg = runner.invoke(app, ["content", "register", str(src),
                                   "--project", "myproj", "--platform", "devto"])
         content_id = _extract_id(reg.output, "cont")
-        result = runner.invoke(app, ["publish", "content", content_id,
-                                     "--url", "https://dev.to/myarticle"])
+        # Clear source_path to simulate missing path record
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "No source file" in result.output
+
+    def test_publish_content_devto_src_missing(self, fgeo_home: Path, tmp_path: Path):
+        """Covers devto branch: source_path recorded but file deleted → error and exit 1."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto"])
+        runner.invoke(app, ["platform", "set", "myproj", "devto", "platform_secret", "test-api-key"])
+        src = tmp_path / "article.md"
+        src.write_text("# Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto"])
+        content_id = _extract_id(reg.output, "cont")
+        src.unlink()  # delete the file after registration
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_content_devto_no_api_key(self, fgeo_home: Path, tmp_path: Path):
+        """Covers devto branch: source_path and src exist but no api key → exit 1."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto"])
+        # Do NOT set platform_secret
+        src = tmp_path / "article.md"
+        src.write_text("# Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "api key" in result.output.lower() or "DEV.to" in result.output
+
+    def test_publish_content_devto_success(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Covers devto success flow: creates pr_open task with draft URL."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto"])
+        runner.invoke(app, ["platform", "set", "myproj", "devto", "platform_secret", "test-api-key"])
+        src = tmp_path / "article.md"
+        src.write_text("# My Article\n\nContent here.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _mock_publish_to_devto(**kwargs):
+            return {"status": "draft_saved", "url": "https://dev.to/u/my-article-123", "id": 123, "message": ""}
+
+        monkeypatch.setattr("fgeo.publishers.devto.publish_to_devto", _mock_publish_to_devto)
+        result = runner.invoke(app, ["publish", "content", content_id])
         assert result.exit_code == 0
-        assert "https://dev.to/myarticle" in result.output
+        assert "dev.to" in result.output.lower() or "draft" in result.output.lower()
+
+    def test_publish_content_devto_failed_response(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Covers devto failure path: publish_to_devto returns status=failed → exit 1."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto"])
+        runner.invoke(app, ["platform", "set", "myproj", "devto", "platform_secret", "bad-key"])
+        src = tmp_path / "article.md"
+        src.write_text("# My Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _mock_publish_to_devto(**kwargs):
+            return {"status": "failed", "url": "", "id": 0, "message": "401 Unauthorized"}
+
+        monkeypatch.setattr("fgeo.publishers.devto.publish_to_devto", _mock_publish_to_devto)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower() or "DEV.to" in result.output
 
     def test_publish_content_blog_filename_already_has_date_prefix(self, fgeo_home: Path, tmp_path: Path):
         """Covers _with_date_prefix line: return filename when prefix already present."""
