@@ -272,7 +272,7 @@ def _parse_inline(text: str) -> str:
 
     Handles: **bold**, *italic*, `code`, [link](url), ![img](url), ~~del~~
     """
-    # Images: ![alt](url "title")
+    # Images: ![alt](url "title") — keep images (WeChat allows inline images)
     text = re.sub(
         r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"([^\"]*)\")?\)",
         lambda m: (
@@ -284,12 +284,19 @@ def _parse_inline(text: str) -> str:
         text,
     )
 
-    # Links: [text](url)
+    # Links: [text](url) — WeChat MP blocks external links, keep text only
     text = re.sub(
         r"\[([^\]]+)\]\(([^)]+)\)",
-        lambda m: f'<a href="{m.group(2)}" style="{_s("a")}">{m.group(1)}</a>',
+        lambda m: m.group(1),
         text,
     )
+
+    # Auto-links: <https://...> — WeChat MP blocks external URLs, remove entirely
+    text = re.sub(r"<(https?://[^>]+)>", "", text)
+
+    # Bare URLs — remove http(s) URLs that appear as plain text.
+    # Uses negative lookbehind to skip URLs already inside HTML attributes (src="...", href="...")
+    text = re.sub(r'(?<![="\'(])https?://[^\s<>)\]"\']+', "", text)
 
     # Bold: **text** or __text__
     text = re.sub(

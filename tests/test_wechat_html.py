@@ -77,9 +77,11 @@ class TestParseInline:
         assert "d14" in result  # code color
 
     def test_link(self):
+        # WeChat MP blocks external links — only link text is kept, no <a> tag
         result = _parse_inline("[click](https://example.com)")
-        assert '<a href="https://example.com"' in result
+        assert "<a" not in result
         assert "click" in result
+        assert "https://" not in result
 
     def test_image(self):
         result = _parse_inline("![alt](https://img.com/a.png)")
@@ -96,8 +98,10 @@ class TestParseInline:
         assert "<code" in result
 
     def test_link_with_inline_formatting(self):
+        # WeChat MP blocks external links — bold text is kept, URL and <a> tag are stripped
         result = _parse_inline("[**bold link**](https://example.com)")
-        assert '<a href="https://example.com"' in result
+        assert "<a" not in result
+        assert "https://" not in result
         assert "<strong" in result
 
 

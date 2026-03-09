@@ -212,6 +212,31 @@ After user confirms the draft is final:
 - `fgeo status <project>` — full dashboard
 - Proactively identify gaps: "Your devto has 0/3 articles, shall we draft one?"
 
+### Phase 7: Publishing (content → live on platform)
+
+Publishing is a distinct phase — do NOT confuse it with content registration (Phase 5).
+
+**Trigger**: User says "发布", "帮我发布", "publish this", or asks to push content live.
+
+**Core command**: `fgeo publish content <id>` — this ONE command handles ALL platforms. The CLI auto-detects the platform from the content's metadata and routes to the correct publisher:
+
+| Platform | Publish Method | Result |
+|----------|---------------|--------|
+| **blog** | Git clone → branch → commit → push → PR | `pr_open` task; user merges PR |
+| **medium** | Playwright RPA → paste into editor | Draft URL; user reviews and publishes |
+| **公众号** | Playwright RPA → QR login → paste HTML | Draft in WeChat MP editor; user publishes |
+| **bluesky** | AT Protocol API → direct post | Immediately published |
+| **other** | Status update only | Marks as published |
+
+**Agent workflow for ANY publish request:**
+1. Identify which content to publish → `fgeo content list --project <p> --status draft`
+2. Confirm with user: "I'll publish [title] to [platform]. Proceed?"
+3. Run: `fgeo publish content <id>`
+4. Show the result (PR URL / draft URL / post URL / task ID)
+5. If task created → tell user next steps; after user completes → `fgeo publish task done <task-id>`
+
+**⚠️ NEVER skip straight to `fgeo content set <id> status published`.** That is only for syncing status AFTER the user has already published manually. See Anti-Pattern #9.
+
 ## Content Registration Rules (CRITICAL)
 
 ### NEVER register orphan content
@@ -307,9 +332,15 @@ Never choose a backup that modifies data outside of `fgeo` CLI.
 ### Content
 - **User finishes writing** → `fgeo content register <file> --project <p> --platform <pl> --direction <d>`
 - **User asks what to write next** → check plan gaps via `fgeo status`, suggest topics for underserved platforms
-- **User says "发布" / "帮我发布" / "publish this"** (intent: wants agent to perform publishing) → follow the platform-specific publish flow: run `fgeo publish content <id>` (see Blog/Medium/Bluesky Publish Flow sections). Do NOT just update status.
-- **User reports they already published manually** (e.g. "我发布了", "已经发了", "发完了") → `fgeo content set <id> status published` to sync the status.
 - **User asks about content status** → `fgeo content list --project <p> [--platform <pl>] [--status <s>]`
+
+### Publishing (⚠️ HIGH PRIORITY — agents often get this wrong)
+
+**ALL 4 platforms (blog, medium, 公众号, bluesky) support `fgeo publish content <id>`.** The CLI auto-routes to the correct publisher. You do NOT need to know the internal mechanism — just run the command.
+
+- **User says "发布" / "帮我发布" / "publish this" / "发到XX"** (intent: wants agent to perform publishing) → run `fgeo publish content <id>`. See Phase 7 and platform-specific Publish Flow sections below.
+- **User reports they already published manually** (e.g. "我发布了", "已经发了", "发完了") → `fgeo content set <id> status published` to sync the status. Do NOT run `fgeo publish content`.
+- **Not sure which content to publish** → `fgeo publish list --project <p>` to see publishable content.
 
 ### Blog Publish Flow (Git PR)
 
@@ -339,6 +370,81 @@ When a user wants to publish content to their personal blog (GitHub Pages):
 **Task inspection commands:**
 - `fgeo publish task list` — see all open tasks
 - `fgeo publish task show <task-id>` — see task details and next steps
+
+### Medium Publish Flow (Playwright RPA)
+
+When a user wants to publish content to Medium:
+
+> ⚠️ **Medium Integration Token API is deprecated** (since 2024/2025). New accounts cannot obtain a token. Use the Playwright RPA approach instead — no credentials needed beyond a browser login.
+
+1. **Confirm publish info** → summarize: title, source file path.
+   Wait for user to confirm before proceeding.
+
+2. **Publish** → `fgeo publish content <id>`
+   - Opens a Chromium browser (cookie-first; headed only on first login)
+   - If not logged in: opens `medium.com/m/signin` and waits up to 3 min for user to log in manually
+   - Cookies saved to `~/.fgeo/medium/cookies.json` — subsequent publishes are headless
+   - Navigates to `medium.com/new-story`
+   - Sets title via `h3.graf--title` (JS textContent)
+   - Pastes HTML body into `p.graf--p` via `ClipboardEvent('paste')` (technique from doocs/cose)
+   - Waits for Medium auto-save → captures unique draft URL
+   - Records `publish_task` with `status=pr_open`
+
+3. **Show user the result** → display draft URL + task ID.
+   User opens draft URL in browser, reviews, and publishes on Medium.
+
+4. **After user publishes on Medium** → run:
+   - `fgeo publish task done <task-id>` → task `merged`, content `published`
+
+**Key implementation details:**
+- DOM selectors (live 2026-03, cross-referenced doocs/cose): title=`h3.graf--title`, body=`p.graf--p`
+- No `platform_secret` required — authentication is browser-based
+- `task status = pr_open` (unlike blog which also uses pr_open, unlike Bluesky which is `merged`)
+
+### 公众号 Publish Flow (Playwright RPA)
+
+When a user wants to publish content to 公众号 (WeChat MP):
+
+> ⚠️ 公众号 **IS supported** by `fgeo publish content`. The CLI uses Playwright RPA to automate the WeChat MP editor — same approach as Medium.
+
+1. **Confirm publish info** → summarize: title, source file path.
+   Wait for user to confirm before proceeding.
+
+2. **Publish** → `fgeo publish content <id>`
+   - Converts Markdown → WeChat-compatible HTML (inline styles, no external CSS)
+   - Opens Chromium browser targeting WeChat MP editor
+   - First time: shows QR code for WeChat scan login; waits for user to scan
+   - Cookies saved to `~/.fgeo/wechat/cookies.json` — subsequent publishes skip QR login
+   - Pastes converted HTML into the editor
+   - Saves as draft in WeChat MP backend
+   - Records `publish_task` with `status=pr_open`
+
+3. **Show user the result** → display task ID.
+   User opens WeChat MP backend, reviews the draft, and publishes manually.
+
+4. **After user publishes on WeChat MP** → run:
+   - `fgeo publish task done <task-id>` → task `merged`, content `published`
+
+### Bluesky Publish Flow (AT Protocol API)
+
+When a user wants to publish content to Bluesky:
+
+1. **Check credentials** → `fgeo platform show <project> bluesky`
+   - If `bsky_handle` or `platform_secret` not set → ask user for Bluesky handle and app password
+   - Store: `fgeo platform set <project> bluesky bsky_handle <handle>` and `fgeo platform set <project> bluesky platform_secret <app-password>`
+
+2. **Confirm publish info** → summarize: post text (≤295 graphemes), any URLs/hashtags.
+   Wait for user to confirm before proceeding.
+
+3. **Publish** → `fgeo publish content <id>`
+   - Strips Markdown frontmatter
+   - Validates post length ≤ 295 graphemes
+   - Builds facets for URLs and hashtags automatically
+   - Posts via AT Protocol API (atproto library)
+   - Content is **immediately live** — no draft/review step
+   - Marks content as `published` with `published_url` and `published_at`
+
+4. **Show user the result** → display post URL.
 
 ### fcontext Integration
 - **Before writing any content** → read `.fcontext/_README.md` to understand the product deeply
@@ -384,11 +490,14 @@ fgeo content set <id> <field> <value>          # fields include: plan_id, status
 fgeo content assign-plan <project> <plan> [--platform p] [--status s]  # batch-assign plan to matching contents
 fgeo content remove <id> [--force]
 
-# Publish
+# Publish (supports: blog, medium, 公众号, bluesky — auto-routes by platform)
 fgeo publish content <id> [--blog-dir <path>] [--url <url>] [--force]
   # blog platform (publish_url set)  → git PR flow
   # blog platform (no publish_url)   → local copy
-  # bluesky platform                 → post via atproto API
+  # medium platform                  → Playwright RPA → draft/publish on medium.com
+  # 公众号 platform                   → Playwright RPA → draft in WeChat MP editor
+  # bluesky platform                 → post via atproto API (immediate)
+  # other platforms                  → mark as published + record URL
 fgeo publish list [--status draft] [--project <name>] [--platform <name>]  # list publishable content
 fgeo publish task list [--status pr_open|merged|failed]  # list publish tasks
 fgeo publish task show <task-id>                          # show task details
