@@ -92,12 +92,72 @@ def _strip_md(text: str) -> str:
     return text
 
 
+# Required DEV.to-style frontmatter fields that every article should declare.
+_REQUIRED_FM_FIELDS = ("title", "description", "tags")
+
+
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter block from Markdown text.
+
+    Returns:
+        (fields, body) where ``fields`` is a dict of key→value strings and
+        ``body`` is the Markdown content after the closing ``---`` delimiter.
+        Both are empty / equal to ``text`` when no frontmatter is present.
+    """
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
+    fields: dict[str, str] = {}
+    for line in parts[1].strip().splitlines():
+        if ":" in line:
+            key, _, value = line.partition(":")
+            fields[key.strip().lower()] = value.strip().strip("\"'")
+    return fields, parts[2]
+
+
 def _strip_frontmatter(text: str) -> str:
     """Strip YAML frontmatter (--- ... ---) from text."""
-    if text.startswith("---"):
-        parts = text.split("---", 2)
-        return parts[2] if len(parts) >= 3 else text
-    return text
+    _, body = _parse_frontmatter(text)
+    return body
+
+
+_FM_WARN_PREFIX = "[yellow]⚠  Frontmatter:[/yellow]"
+
+
+def _check_devto_frontmatter(src: Path) -> None:
+    """Warn if the source file is missing recommended DEV.to frontmatter fields.
+
+    The DEV.to frontmatter block (title / description / tags / …) serves as the
+    canonical metadata record for every article.  Other platforms strip it before
+    uploading; DEV.to keeps it verbatim.  This check is non-blocking — publishing
+    continues even when fields are absent.
+    """
+    try:
+        text = src.read_text(encoding="utf-8")
+    except OSError:
+        return
+
+    if not text.startswith("---"):
+        console.print(
+            f"{_FM_WARN_PREFIX} {src.name} has no frontmatter block.\n"
+            "  Add a block like:\n"
+            "    ---\n"
+            "    title: \"…\"\n"
+            "    description: \"…\"\n"
+            "    tags: ai, dev\n"
+            "    ---"
+        )
+        return
+
+    fields, _ = _parse_frontmatter(text)
+    missing = [f for f in _REQUIRED_FM_FIELDS if not fields.get(f)]
+    if missing:
+        console.print(
+            f"{_FM_WARN_PREFIX} {src.name} is missing: "
+            + ", ".join(f'[bold]{f}[/bold]' for f in missing)
+        )
 
 
 def _extract_bsky_text(src: Path, max_chars: int = 270) -> str:
@@ -372,11 +432,12 @@ def _publish_medium(
     task_dir = FGEO_HOME / "publish" / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    markdown_content = src.read_text(encoding="utf-8")
+    raw_markdown = src.read_text(encoding="utf-8")
+    fm_fields, markdown_content = _parse_frontmatter(raw_markdown)
 
-    # Pull subtitle + tags from the content record
-    subtitle = content.get("description") or ""
-    raw_tags = content.get("tags") or ""
+    # Pull subtitle + tags: prefer frontmatter values, fall back to content record
+    subtitle = fm_fields.get("description") or content.get("description") or ""
+    raw_tags = fm_fields.get("tags") or content.get("tags") or ""
     tags = [t.strip() for t in raw_tags.split(",") if t.strip()]
 
     console.print("[bold]Publishing to Medium via browser …[/bold]")
@@ -542,7 +603,8 @@ def _publish_juejin(
     task_dir = FGEO_HOME / "publish" / "tasks" / task_id
     task_dir.mkdir(parents=True, exist_ok=True)
 
-    markdown_content = src.read_text(encoding="utf-8")
+    raw_markdown = src.read_text(encoding="utf-8")
+    _, markdown_content = _parse_frontmatter(raw_markdown)
     effective_category = category_id or JUEJIN_DEFAULT_CATEGORY
 
     result = publish_to_juejin(
@@ -619,11 +681,12 @@ def _publish_blog_git(
     # Use -B to reset the branch if it already exists (needed when --force)
     _run_git(["checkout", "-B", branch], cwd=repo_dir)
 
-    # Copy article into docs/posts/
+    # Copy article into docs/posts/ (stripping DEV.to frontmatter)
     posts_dir = repo_dir / "docs" / "posts"
     posts_dir.mkdir(parents=True, exist_ok=True)
     dest_name = _with_date_prefix(src.name)
-    shutil.copy2(src, posts_dir / dest_name)
+    _, blog_body = _parse_frontmatter(src.read_text(encoding="utf-8"))
+    (posts_dir / dest_name).write_text(blog_body, encoding="utf-8")
 
     _run_git(["add", "-A"], cwd=repo_dir)
     _run_git(["commit", "-m", f"publish: {title}"], cwd=repo_dir)
@@ -717,7 +780,8 @@ def _publish_blog_local(
         console.print("Use [bold]--force[/bold] to overwrite.")
         raise typer.Exit(1)
 
-    shutil.copy2(src, dest)
+    _, blog_body = _parse_frontmatter(src.read_text(encoding="utf-8"))
+    dest.write_text(blog_body, encoding="utf-8")
     db.update_content(content_id, "status", "published")
     db.update_content(content_id, "published_at", now_iso)
     db.update_content(content_id, "published_url", str(dest))
@@ -853,6 +917,12 @@ def publish_content(
     workspace = content.get("workspace") or ""
     now_iso = datetime.now().isoformat(timespec="seconds")
     title = content.get("title") or content_id
+
+    # Non-blocking frontmatter check — warns if DEV.to metadata fields are missing.
+    # The frontmatter is the canonical metadata record for all articles; non-devto
+    # platforms strip it before uploading.
+    if source_path and Path(source_path).suffix.lower() == ".md":
+        _check_devto_frontmatter(Path(source_path))
 
     if platform_name == BLOG_PLATFORM:
         if not source_path:

@@ -1652,6 +1652,88 @@ def _make_fake_atproto(post_uri: str = "at://did:plc:abc123/app.bsky.feed.post/r
     return fake
 
 
+class TestParseFrontmatter:
+    """Unit tests for _parse_frontmatter."""
+
+    def test_returns_fields_and_body(self):
+        from fgeo.commands.publish import _parse_frontmatter
+
+        text = "---\ntitle: Hello\ndescription: World\n---\n# Body\n"
+        fields, body = _parse_frontmatter(text)
+        assert fields["title"] == "Hello"
+        assert fields["description"] == "World"
+        assert "# Body" in body
+
+    def test_no_frontmatter_returns_empty_dict(self):
+        from fgeo.commands.publish import _parse_frontmatter
+
+        text = "# Just a heading\n\nBody text.\n"
+        fields, body = _parse_frontmatter(text)
+        assert fields == {}
+        assert body == text
+
+    def test_malformed_only_opening_dashes(self):
+        from fgeo.commands.publish import _parse_frontmatter
+
+        # starts with --- but no closing ---
+        text = "---\ntitle: incomplete\n"
+        fields, body = _parse_frontmatter(text)
+        assert fields == {}
+        assert body == text
+
+    def test_strips_quotes_from_values(self):
+        from fgeo.commands.publish import _parse_frontmatter
+
+        text = "---\ntitle: \"Quoted Title\"\n---\nbody\n"
+        fields, _ = _parse_frontmatter(text)
+        assert fields["title"] == "Quoted Title"
+
+    def test_lines_without_colon_are_skipped(self):
+        from fgeo.commands.publish import _parse_frontmatter
+
+        text = "---\ntitle: T\nno-colon-line\n---\nbody\n"
+        fields, _ = _parse_frontmatter(text)
+        assert "title" in fields
+        assert "no-colon-line" not in fields
+
+
+class TestCheckDevtoFrontmatter:
+    """Unit tests for _check_devto_frontmatter (non-blocking warnings)."""
+
+    def test_no_warning_when_all_fields_present(self, tmp_path: Path, capsys):
+        from fgeo.commands.publish import _check_devto_frontmatter
+
+        src = tmp_path / "article.md"
+        src.write_text(
+            '---\ntitle: "My Article"\ndescription: "A desc"\ntags: ai, dev\n---\n# Body\n'
+        )
+        _check_devto_frontmatter(src)
+        captured = capsys.readouterr()
+        assert "Frontmatter" not in captured.out
+
+    def test_warns_when_no_frontmatter_block(self, tmp_path: Path):
+        from fgeo.commands.publish import _check_devto_frontmatter
+
+        src = tmp_path / "article.md"
+        src.write_text("# Just a heading\n\nBody.\n")
+        # Should not raise; output goes to rich console
+        _check_devto_frontmatter(src)  # no exception
+
+    def test_warns_when_fields_missing(self, tmp_path: Path):
+        from fgeo.commands.publish import _check_devto_frontmatter
+
+        src = tmp_path / "article.md"
+        src.write_text("---\ntitle: Present\n---\n# Body\n")
+        # Should not raise; description and tags are missing but it's non-blocking
+        _check_devto_frontmatter(src)  # no exception
+
+    def test_silent_on_oserror(self, tmp_path: Path):
+        from fgeo.commands.publish import _check_devto_frontmatter
+
+        # File does not exist — should silently return
+        _check_devto_frontmatter(tmp_path / "missing.md")  # no exception
+
+
 class TestExtractBskyText:
     """Unit tests for _extract_bsky_text helper."""
 
