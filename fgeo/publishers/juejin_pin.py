@@ -1,20 +1,19 @@
-"""掘金沸点 (Juejin Pin) publisher — short-form posts via Cookie auth + REST API.
+"""掘金沸点 (Juejin Pin) publisher via Playwright RPA.
 
 Reuses the same cookie session as the 掘金 article publisher
 (~/.fgeo/juejin/cookies.json).  No new login flow is needed if the user
 has already set up 掘金 article publishing.
 
-API used (Juejin internal):
-  POST https://api.juejin.cn/euler/server/social_api/v1/pin/create?aid=2608
-  Cookie: {browser session cookies}
-  Body (JSON): {"content": "...", "topic_ids": [], "pic_list": []}
+Flow:
+  1. Load saved cookies from ~/.fgeo/juejin/cookies.json.
+  2. If no cookies or session expired, open headed browser for login.
+  3. Navigate to https://juejin.cn/pins.
+  4. Type the pin text into the rich-editor contenteditable div.
+  5. Intercept the publish API response to capture the pin ID.
+  6. Click the publish button (.btn_box button:last).
+  7. Return the pin URL: https://juejin.cn/pin/{pin_id}.
 
-Response:
-  {"err_no": 0, "data": {"pin_id": "...", ...}}
-
-Pin URL: https://juejin.cn/pin/{pin_id}
-
-Maximum length: 1000 characters (counted as Unicode characters, not graphemes).
+Maximum length: 1000 characters (Unicode chars).
 
 Usage::
 
@@ -27,72 +26,105 @@ Usage::
 
 from __future__ import annotations
 
+import time
+from typing import Any
+
 from rich.console import Console
 
 from fgeo.publishers.juejin import (
-    JUEJIN_AID,
-    JUEJIN_API_BASE,
     JUEJIN_BASE,
-    _cookies_to_header,
-    _get_cookies,
+    JUEJIN_LOGIN_URL,
+    _check_playwright,
+    _clear_cookies,
+    _ensure_data_dir,
+    _is_logged_in,
+    _load_cookies,
+    _save_cookies,
 )
 
 console = Console()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
+JUEJIN_PINS_URL = f"{JUEJIN_BASE}/pins"
 JUEJIN_PIN_MAX_CHARS = 1000
-JUEJIN_PIN_API_URL = f"{JUEJIN_API_BASE}/euler/server/social_api/v1/pin/create"
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
-def _post_pin(cookies: list[dict], text: str, topic_ids: list | None = None) -> dict:
-    """POST a pin to the Juejin API and return the parsed JSON response.
+def _post_pin_playwright(cookies: list[dict] | None, text: str) -> dict[str, Any]:
+    """Post a pin to 掘金沸点 via Playwright browser automation.
 
-    Raises:
-        RuntimeError: if httpx is not installed.
+    If *cookies* is None, performs login in a headed browser first, then
+    navigates to the pin editor in the **same** browser session — avoiding
+    the cookie-replay race condition that occurs when reopening headless.
+
+    Returns:
+        The ``data`` dict from the Juejin API response (may be empty on failure).
     """
-    try:
-        import httpx  # noqa: PLC0415
-    except ImportError as err:
-        raise RuntimeError("httpx not installed — run: pip install httpx") from err
+    _check_playwright()
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
 
-    cookie_header = _cookies_to_header(cookies)
-    headers = {
-        "Cookie": cookie_header,
-        "Content-Type": "application/json; charset=utf-8",
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Referer": f"{JUEJIN_BASE}/",
-        "Origin": JUEJIN_BASE,
-    }
-    payload = {
-        "content": text,
-        "topic_ids": topic_ids or [],
-        "pic_list": [],
-    }
-    params = {"aid": JUEJIN_AID}
-    response = httpx.post(
-        JUEJIN_PIN_API_URL,
-        json=payload,
-        headers=headers,
-        params=params,
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
+    captured: dict[str, Any] = {}
+
+    def _on_response(response: Any) -> None:
+        """Capture the first successful pin-creation API response."""
+        if captured or response.status >= 400:
+            return
+        try:
+            body = response.json()
+            # Juejin uses err_no=0 for success; data holds the pin payload.
+            if body.get("err_no") == 0 and body.get("data"):
+                captured.update(body["data"])
+        except Exception:
+            pass
+
+    needs_login = not cookies
+
+    # Always launch headed — the 掘金 Vue SPA rich editor does not render in
+    # headless Chromium (even with valid cookies).
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=False)
+        context = browser.new_context()
+        if cookies:
+            context.add_cookies(cookies)
+        page = context.new_page()
+        page.on("response", _on_response)
+
+        if needs_login:
+            _ensure_data_dir()
+            console.print("[bold yellow]Not logged in to 掘金 (Juejin).[/bold yellow]")
+            console.print("Opening the Juejin login page in your browser…")
+            console.print("[dim]Please log in, then come back here and press Enter.[/dim]")
+            page.goto(JUEJIN_LOGIN_URL, wait_until="domcontentloaded", timeout=20000)
+            input("Press Enter after you have logged in to juejin.cn … ")
+            _save_cookies(context.cookies())
+
+        console.print("[dim]Navigating to 掘金沸点 editor…[/dim]")
+        page.goto(JUEJIN_PINS_URL, wait_until="networkidle", timeout=30000)
+
+        editor = page.locator("div.rich-editor[contenteditable='true']")
+        editor.click()
+        page.keyboard.type(text)
+        time.sleep(0.5)
+
+        submit = page.locator("div.submit button")
+        submit.click()
+
+        # Allow time for the API response to arrive and be processed.
+        page.wait_for_timeout(3000)
+
+        browser.close()
+
+    return captured
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
-def publish_juejin_pin(text: str, task_dir=None) -> dict:
-    """Publish a short pin to 掘金沸点.
+def publish_juejin_pin(text: str, task_dir=None) -> dict[str, Any]:  # noqa: ARG001
+    """Publish a short pin to 掘金沸点 via Playwright RPA.
 
     Args:
         text: Pin content (max 1000 characters).
@@ -105,17 +137,6 @@ def publish_juejin_pin(text: str, task_dir=None) -> dict:
             id      : pin ID (empty on failure)
             message : error message (empty on success)
     """
-    # ── Dependency check ──────────────────────────────────────────────────────
-    try:
-        import httpx  # noqa: F401, PLC0415
-    except ImportError:
-        return {
-            "status": "failed",
-            "url": "",
-            "id": "",
-            "message": "httpx not installed — run: pip install httpx",
-        }
-
     # ── Length validation ─────────────────────────────────────────────────────
     if len(text) > JUEJIN_PIN_MAX_CHARS:
         return {
@@ -129,43 +150,42 @@ def publish_juejin_pin(text: str, task_dir=None) -> dict:
         }
 
     # ── Cookie auth ───────────────────────────────────────────────────────────
-    cookies = _get_cookies(headless=False)
-    if not cookies:
-        return {
-            "status": "failed",
-            "url": "",
-            "id": "",
-            "message": "Login failed or cancelled — no cookies obtained",
-        }
+    # Load saved cookies; if expired, clear them and pass None so that login
+    # is handled inline inside _post_pin_playwright (same browser session).
+    cookies = _load_cookies()
+    if cookies and not _is_logged_in(cookies):
+        console.print("[yellow]Saved Juejin cookies have expired.[/yellow]")
+        _clear_cookies()
+        cookies = None
 
-    # ── API call ──────────────────────────────────────────────────────────────
+    # ── Post via Playwright ───────────────────────────────────────────────────
     try:
-        resp = _post_pin(cookies, text)
+        data = _post_pin_playwright(cookies, text)
     except Exception as exc:
         return {
             "status": "failed",
             "url": "",
             "id": "",
-            "message": f"API error: {exc}",
+            "message": f"Browser error: {exc}",
         }
 
-    err_no = resp.get("err_no", -1)
-    if err_no != 0:
-        err_msg = resp.get("err_msg", "unknown error")
-        return {
-            "status": "failed",
-            "url": "",
-            "id": "",
-            "message": f"Juejin API error {err_no}: {err_msg}",
-        }
-
-    pin_id = (resp.get("data") or {}).get("pin_id", "")
+    # Accept any of the known pin ID field names Juejin may return.
+    # Juejin 沸点 API uses short_msg_id; fallback to generic *_id scan.
+    pin_id = (
+        data.get("short_msg_id")
+        or data.get("pin_id")
+        or data.get("msg_id")
+        or data.get("id")
+        or next((v for k, v in data.items() if k.endswith("_id") and v), "")
+        or ""
+    )
     if not pin_id:
+        console.print(f"[yellow]API response data: {data}[/yellow]")
         return {
             "status": "failed",
             "url": "",
             "id": "",
-            "message": "Juejin API returned no pin_id",
+            "message": f"No pin ID in API response (keys: {list(data.keys()) or 'empty'})",
         }
 
     pin_url = f"{JUEJIN_BASE}/pin/{pin_id}"
@@ -173,6 +193,6 @@ def publish_juejin_pin(text: str, task_dir=None) -> dict:
     return {
         "status": "published",
         "url": pin_url,
-        "id": pin_id,
+        "id": str(pin_id),
         "message": "",
     }
