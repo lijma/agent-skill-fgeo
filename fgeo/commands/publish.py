@@ -1050,9 +1050,21 @@ def publish_content(
 ) -> None:
     """Publish a content item to its platform.
 
-    Blog with publish_url set: git clone → branch → commit → push → PR → task.
-    Blog without publish_url: copy file locally (--blog-dir or workspace path).
-    Other platforms: mark published and record URL.
+    Supported platforms and their publish flow:
+
+    \b
+      blog           Git clone → branch → commit → push → PR → task (pr_open).
+                     Falls back to local file copy when publish_url is not set.
+      medium         Playwright RPA → paste into editor → draft URL (pr_open).
+      公众号          Playwright RPA → QR login → paste HTML → draft (pr_open).
+      bluesky        AT Protocol API → direct post (published immediately).
+      devto          Forem REST API → draft on dev.to (pr_open).
+      掘金 / juejin  Playwright cookie login → Juejin API → draft (pr_open).
+      掘金沸点 / juejin-pin
+                     Juejin Pin API (reuses 掘金 cookies) → published immediately.
+      devto-quickpost
+                     Forem REST API with published:true → published immediately.
+      other          Mark as published and record URL (--url).
     """
     db = get_db()
     content = db.get_content(content_id)
