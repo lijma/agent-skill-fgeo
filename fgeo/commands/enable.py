@@ -227,6 +227,7 @@ Publishing is a distinct phase — do NOT confuse it with content registration (
 | **公众号** | Playwright RPA → QR login → paste HTML | Draft in WeChat MP editor; user publishes |
 | **bluesky** | AT Protocol API → direct post | Immediately published |
 | **devto** | Forem REST API → create draft | Draft URL; user reviews and publishes |
+| **掘金** | Playwright login → httpx API → create draft | Draft URL; user reviews and publishes |
 | **other** | Status update only | Marks as published |
 
 **Agent workflow for ANY publish request:**
@@ -337,7 +338,7 @@ Never choose a backup that modifies data outside of `fgeo` CLI.
 
 ### Publishing (⚠️ HIGH PRIORITY — agents often get this wrong)
 
-**ALL 5 platforms (blog, medium, 公众号, bluesky, devto) support `fgeo publish content <id>`.** The CLI auto-routes to the correct publisher. You do NOT need to know the internal mechanism — just run the command.
+**ALL 6 platforms (blog, medium, 公众号, bluesky, devto, 掘金) support `fgeo publish content <id>`.** The CLI auto-routes to the correct publisher. You do NOT need to know the internal mechanism — just run the command.
 
 - **User says "发布" / "帮我发布" / "publish this" / "发到XX"** (intent: wants agent to perform publishing) → run `fgeo publish content <id>`. See Phase 7 and platform-specific Publish Flow sections below.
 - **User reports they already published manually** (e.g. "我发布了", "已经发了", "发完了") → `fgeo content set <id> status published` to sync the status. Do NOT run `fgeo publish content`.
@@ -475,6 +476,39 @@ When a user wants to publish content to DEV.to:
 - Tags: up to 4 tags; merged from frontmatter `tags:` field + content tags
 - Supports `canonical_url` frontmatter for cross-posting from blog
 
+### 掘金 Publish Flow (Playwright + REST API)
+
+When a user wants to publish content to 掘金 (Juejin / 稼书掌):
+
+> ⚠️ 掘金 uses **cookie-based auth** (no public API key). The CLI opens a browser on first use, saves session cookies to `~/.fgeo/juejin/cookies.json`, and reuses them on subsequent publishes.
+
+1. **Confirm publish info** → summarize: title, source file path, category.
+   Wait for user to confirm before proceeding.
+
+2. **Optionally set category** → if content needs a non-default category:
+   - `fgeo platform set <project> 掘金 publish_url <category_id>`
+   - Default category: **后端** (`6809637767543259144`)
+   - Other categories: 前端 `6809637767543259944`, 工具 `6809637769959178254`, 阅读 `6809637772874219528`
+
+3. **Publish** → `fgeo publish content <id>`
+   - First time: opens Chromium browser → user logs in to juejin.cn → presses Enter
+   - Subsequent times: uses saved cookies (headless validation via user API)
+   - If cookies expire: clears them and re-opens browser
+   - Calls Juejin internal API to create a Markdown draft
+   - Creates a `publish_task` with `status=pr_open`
+
+4. **Show user the result** → display draft URL + task ID.
+   User opens the draft URL on juejin.cn, reviews, and clicks Publish.
+
+5. **After user publishes on 掘金** → run:
+   - `fgeo publish task done <task-id>` → task `merged`, content `published`
+
+**Key details:**
+- No `platform_secret` needed — auth is cookie-based via browser
+- `publish_url` field stores the Juejin **category ID** (not a URL)
+- Edit type 10 = Markdown editor (the draft opens in the full Markdown editor)
+- draft URL format: `https://juejin.cn/editor/drafts/<draft_id>`
+
 ### fcontext Integration
 - **Before writing any content** → read `.fcontext/_README.md` to understand the product deeply
 - **Need technical details** → check `.fcontext/_cache/` for indexed docs
@@ -519,7 +553,7 @@ fgeo content set <id> <field> <value>          # fields include: plan_id, status
 fgeo content assign-plan <project> <plan> [--platform p] [--status s]  # batch-assign plan to matching contents
 fgeo content remove <id> [--force]
 
-# Publish (supports: blog, medium, 公众号, bluesky, devto — auto-routes by platform)
+# Publish (supports: blog, medium, 公众号, bluesky, devto, 掘金 — auto-routes by platform)
 fgeo publish content <id> [--blog-dir <path>] [--url <url>] [--force]
   # blog platform (publish_url set)  → git PR flow
   # blog platform (no publish_url)   → local copy
@@ -527,6 +561,7 @@ fgeo publish content <id> [--blog-dir <path>] [--url <url>] [--force]
   # 公众号 platform                   → Playwright RPA → draft in WeChat MP editor
   # bluesky platform                 → post via atproto API (immediate)
   # devto platform                   → Forem REST API → draft on dev.to
+  # 掘金 platform                   → Playwright cookie login → Juejin API → draft on juejin.cn
   # other platforms                  → mark as published + record URL
 fgeo publish list [--status draft] [--project <name>] [--platform <name>]  # list publishable content
 fgeo publish task list [--status pr_open|merged|failed]  # list publish tasks

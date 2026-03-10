@@ -1109,6 +1109,78 @@ class TestPublishCommands:
         assert result.exit_code == 1
         assert "failed" in result.output.lower() or "DEV.to" in result.output
 
+    # ── 掘金 (Juejin) tests ────────────────────────────────────────────────────
+
+    def test_publish_content_juejin_no_source_path(self, fgeo_home: Path, tmp_path: Path):
+        """Exit 1 when source_path is not recorded for Juejin content."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金"])
+        src = tmp_path / "article.md"
+        src.write_text("# Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金"])
+        content_id = _extract_id(reg.output, "cont")
+        # Clear source_path to simulate missing path
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "source" in result.output.lower() or "path" in result.output.lower()
+
+    def test_publish_content_juejin_src_missing(self, fgeo_home: Path, tmp_path: Path):
+        """Exit 1 when the source file no longer exists on disk."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金"])
+        src = tmp_path / "article.md"
+        src.write_text("# Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金"])
+        content_id = _extract_id(reg.output, "cont")
+        src.unlink()  # delete file after registration
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_content_juejin_success(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Covers happy path: publish_to_juejin succeeds → draft URL displayed."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金"])
+        src = tmp_path / "article.md"
+        src.write_text("# My Juejin Article\n\nContent.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        draft_id = "7000000000000011111"
+        draft_url = f"https://juejin.cn/editor/drafts/{draft_id}"
+
+        def _mock_publish(**kwargs):
+            return {"status": "draft_saved", "url": draft_url, "id": draft_id, "message": ""}
+
+        monkeypatch.setattr("fgeo.publishers.juejin.publish_to_juejin", _mock_publish)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "juejin" in result.output.lower() or "draft" in result.output.lower()
+
+    def test_publish_content_juejin_failed_response(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Covers Juejin failure path: publish_to_juejin returns status=failed → exit 1."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金"])
+        src = tmp_path / "article.md"
+        src.write_text("# My Article\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _mock_publish(**kwargs):
+            return {"status": "failed", "url": "", "id": "", "message": "rate limit"}
+
+        monkeypatch.setattr("fgeo.publishers.juejin.publish_to_juejin", _mock_publish)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower() or "掘金" in result.output
+
     def test_publish_content_blog_filename_already_has_date_prefix(self, fgeo_home: Path, tmp_path: Path):
         """Covers _with_date_prefix line: return filename when prefix already present."""
         ws = tmp_path / "ws"
