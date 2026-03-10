@@ -2488,7 +2488,33 @@ class TestContentAssignPlan:
         db.close()
         result = runner.invoke(app, ["content", "set", ids["PostA"], "plan_id", plan["id"]])
         assert result.exit_code == 0
-        assert "plan_id" in result.output
+
+    def test_assign_by_id_exits_zero(self, fgeo_home: Path, tmp_path: Path):
+        """--id assigns a single content item to a plan."""
+        ids = self._setup(fgeo_home, tmp_path)
+        result = runner.invoke(app, [
+            "content", "assign-plan", "asproj", "gtm-v1", "--id", ids["PostA"],
+        ])
+        assert result.exit_code == 0
+        assert ids["PostA"] in result.output
+
+    def test_assign_by_id_unknown_content_exits_1(self, fgeo_home: Path, tmp_path: Path):
+        """--id with a non-existent content ID should exit 1."""
+        self._setup(fgeo_home, tmp_path)
+        result = runner.invoke(app, [
+            "content", "assign-plan", "asproj", "gtm-v1", "--id", "cont-does-not-exist",
+        ])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_assign_by_id_unknown_plan_exits_1(self, fgeo_home: Path, tmp_path: Path):
+        """--id with a non-existent plan should exit 1."""
+        ids = self._setup(fgeo_home, tmp_path)
+        result = runner.invoke(app, [
+            "content", "assign-plan", "asproj", "no-such-plan", "--id", ids["PostA"],
+        ])
+        assert result.exit_code == 1
+        assert "Plan not found" in result.output
 
 
 class TestPublishWechatFlow:

@@ -227,10 +227,14 @@ def set_field(
 def assign_plan(
     project: str = typer.Argument(help="Project name"),
     plan: str = typer.Argument(help="Plan name"),
+    content_id: str = typer.Option("", "--id", "-i", help="Assign a single content by ID (ignores --platform and --status)."),
     platform: list[str] = typer.Option([], "--platform", "-p", help="Filter by platform name (repeatable). Omit to target all platforms."),
     status: str = typer.Option("", "--status", "-s", help="Filter by content status (draft, published, planned, …). Omit to target all."),
 ) -> None:
     """Batch-assign a plan to all matching content in a project.
+
+    To assign a single content item, use --id:
+      fgeo content assign-plan myproj gtm-v1 --id cont-abc123
 
     Examples:
       fgeo content assign-plan myproj gtm-v1
@@ -239,6 +243,18 @@ def assign_plan(
     """
     db = get_db()
     try:
+        if content_id:
+            entry = db.get_content(content_id)
+            if not entry:
+                console.print(f"[red]Content not found: {content_id}[/red]")
+                raise typer.Exit(1)
+            plan_obj = db.get_plan(project, plan)
+            if not plan_obj:
+                console.print(f"[red]Plan not found: {plan} in project {project}[/red]")
+                raise typer.Exit(1)
+            db.update_content(content_id, "plan_id", plan_obj["id"])
+            console.print(f"[green]✓[/green] Assigned plan [bold]{plan}[/bold] to content {content_id}")
+            return
         count = db.assign_plan_to_contents(
             project_name=project,
             plan_name=plan,
