@@ -29,10 +29,20 @@ WECHAT_PLATFORM = "公众号"
 MEDIUM_PLATFORM = "medium"
 DEVTO_PLATFORM = "devto"
 JUEJIN_PLATFORM = "掘金"
+JUEJIN_PLATFORM_ALT = "juejin"
+JUEJIN_PIN_PLATFORM = "掘金沸点"
+JUEJIN_PIN_PLATFORM_ALT = "juejin-pin"
+DEVTO_QP_PLATFORM = "devto-quickpost"
 
 # Bluesky hard limit: 300 graphemes per post.
 # We use 295 as a safe margin. Content exceeding this is rejected at publish time.
 BSKY_MAX_GRAPHEMES = 295
+
+# 掘金沸点 pin character limit (Unicode chars, not graphemes)
+JUEJIN_PIN_MAX_CHARS = 1000
+
+# DEV.to Quickpost character limit (Unicode chars, mirrors the UI counter)
+DEVTO_QP_MAX_CHARS = 256
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -653,6 +663,150 @@ def _publish_juejin(
     console.print(Panel(body, title=f"[green]✓ 掘金 draft created[/green] — {title}"))
 
 
+# ── 掘金沸点 pin flow ─────────────────────────────────────────────────────────
+
+def _publish_juejin_pin(
+    db,
+    content: dict,
+    content_id: str,
+    title: str,
+    src: Path,
+    now_iso: str,
+) -> None:
+    """Publish a short pin to 掘金沸点 (Juejin Pin) — immediate publish, no draft."""
+    from fgeo.publishers.juejin_pin import publish_juejin_pin  # noqa: PLC0415
+
+    task_id = _make_task_id(content_id)
+    task_dir = FGEO_HOME / "publish" / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    raw = src.read_text(encoding="utf-8")
+    post_text = _strip_md(_strip_frontmatter(raw)).strip()
+    post_text = re.sub(r"\n{3,}", "\n\n", post_text).strip()
+
+    char_count = len(post_text)
+    if char_count > JUEJIN_PIN_MAX_CHARS:
+        console.print(
+            f"[red]✗ Content too long for 掘金沸点[/red]\n"
+            f"  Current length : [bold]{char_count}[/bold] characters\n"
+            f"  Limit          : [bold]{JUEJIN_PIN_MAX_CHARS}[/bold] characters\n\n"
+            f"掘金沸点 is a short-form post — please trim your content and try again."
+        )
+        raise typer.Exit(1)
+
+    result = publish_juejin_pin(post_text, task_dir=task_dir)
+    platform_id = content.get("platform_id") or ""
+
+    if result.get("status") == "failed":
+        console.print(f"[red]掘金沸点 publish failed:[/red] {result.get('message', 'unknown error')}")
+        db.create_publish_task(
+            task_id=task_id,
+            content_id=content_id,
+            platform_id=platform_id,
+            repo_url="https://juejin.cn",
+            branch="",
+            task_dir=str(task_dir),
+            pr_url="",
+            status="failed",
+        )
+        raise typer.Exit(1)
+
+    pin_url = result.get("url", "")
+    db.create_publish_task(
+        task_id=task_id,
+        content_id=content_id,
+        platform_id=platform_id,
+        repo_url="https://juejin.cn",
+        branch="",
+        task_dir=str(task_dir),
+        pr_url=pin_url,
+        status="merged",
+    )
+    db.update_content(content_id, "status", "published")
+    db.update_content(content_id, "published_at", now_iso)
+    if pin_url:
+        db.update_content(content_id, "published_url", pin_url)
+
+    console.print(Panel(
+        f"[bold]Pin URL:[/bold]  {pin_url}\n"
+        f"[bold]Status:[/bold]   [green]published[/green]",
+        title=f"[green]✓ 掘金沸点 published[/green] — {title}",
+    ))
+
+
+# ── DEV.to Quickpost flow ────────────────────────────────────────────────────
+
+def _publish_devto_quickpost(
+    db,
+    content: dict,
+    content_id: str,
+    title: str,
+    src: Path,
+    api_key: str,
+    now_iso: str,
+) -> None:
+    """Publish a short post to DEV.to Quickpost — immediate publish, no draft."""
+    from fgeo.publishers.devto_quickpost import publish_devto_quickpost  # noqa: PLC0415
+
+    task_id = _make_task_id(content_id)
+    task_dir = FGEO_HOME / "publish" / "tasks" / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+
+    raw = src.read_text(encoding="utf-8")
+    post_text = _strip_md(_strip_frontmatter(raw)).strip()
+    post_text = re.sub(r"\n{3,}", "\n\n", post_text).strip()
+
+    char_count = len(post_text)
+    if char_count > DEVTO_QP_MAX_CHARS:
+        console.print(
+            f"[red]✗ Content too long for DEV.to Quickpost[/red]\n"
+            f"  Current length : [bold]{char_count}[/bold] characters\n"
+            f"  Limit          : [bold]{DEVTO_QP_MAX_CHARS}[/bold] characters\n\n"
+            f"DEV.to Quickpost is limited to {DEVTO_QP_MAX_CHARS} characters — "
+            f"please trim your content and try again."
+        )
+        raise typer.Exit(1)
+
+    result = publish_devto_quickpost(post_text, api_key=api_key, task_dir=task_dir)
+    platform_id = content.get("platform_id") or ""
+
+    if result.get("status") == "failed":
+        console.print(f"[red]DEV.to Quickpost failed:[/red] {result.get('message', 'unknown error')}")
+        db.create_publish_task(
+            task_id=task_id,
+            content_id=content_id,
+            platform_id=platform_id,
+            repo_url="https://dev.to",
+            branch="",
+            task_dir=str(task_dir),
+            pr_url="",
+            status="failed",
+        )
+        raise typer.Exit(1)
+
+    post_url = result.get("url", "")
+    db.create_publish_task(
+        task_id=task_id,
+        content_id=content_id,
+        platform_id=platform_id,
+        repo_url="https://dev.to",
+        branch="",
+        task_dir=str(task_dir),
+        pr_url=post_url,
+        status="merged",
+    )
+    db.update_content(content_id, "status", "published")
+    db.update_content(content_id, "published_at", now_iso)
+    if post_url:
+        db.update_content(content_id, "published_url", post_url)
+
+    console.print(Panel(
+        f"[bold]Post URL:[/bold] {post_url}\n"
+        f"[bold]Status:[/bold]   [green]published[/green]",
+        title=f"[green]✓ DEV.to Quickpost published[/green] — {title}",
+    ))
+
+
 # ── Blog git-PR flow ──────────────────────────────────────────────────────────
 
 def _publish_blog_git(
@@ -1027,7 +1181,7 @@ def publish_content(
 
         _publish_devto(db, content, content_id, title, src, api_key, now_iso)
 
-    elif platform_name == JUEJIN_PLATFORM:
+    elif platform_name in (JUEJIN_PLATFORM, JUEJIN_PLATFORM_ALT):
         if not source_path:
             console.print("[red]No source file path recorded for this content.[/red]")
             console.print(f"Run: [bold]fgeo content set {content_id} source_path <path>[/bold]")
@@ -1040,6 +1194,41 @@ def publish_content(
 
         category_id = publish_url  # publish_url stores category_id for Juejin
         _publish_juejin(db, content, content_id, title, src, now_iso, category_id)
+
+    elif platform_name in (JUEJIN_PIN_PLATFORM, JUEJIN_PIN_PLATFORM_ALT):
+        if not source_path:
+            console.print("[red]No source file path recorded for this content.[/red]")
+            console.print(f"Run: [bold]fgeo content set {content_id} source_path <path>[/bold]")
+            raise typer.Exit(1)
+
+        src = Path(source_path)
+        if not src.exists():
+            console.print(f"[red]Source file not found:[/red] {source_path}")
+            raise typer.Exit(1)
+
+        _publish_juejin_pin(db, content, content_id, title, src, now_iso)
+
+    elif platform_name == DEVTO_QP_PLATFORM:
+        if not source_path:
+            console.print("[red]No source file path recorded for this content.[/red]")
+            console.print(f"Run: [bold]fgeo content set {content_id} source_path <path>[/bold]")
+            raise typer.Exit(1)
+
+        src = Path(source_path)
+        if not src.exists():
+            console.print(f"[red]Source file not found:[/red] {source_path}")
+            raise typer.Exit(1)
+
+        api_key = platform.get("platform_secret") or ""
+        if not api_key:
+            console.print(
+                "[red]DEV.to API key not set.[/red]\n"
+                "Run: [bold]fgeo platform set <proj> devto-quickpost platform_secret <api-key>[/bold]\n"
+                "[dim]Get your API key at: https://dev.to/settings/extensions[/dim]"
+            )
+            raise typer.Exit(1)
+
+        _publish_devto_quickpost(db, content, content_id, title, src, api_key, now_iso)
 
     else:
         db.update_content(content_id, "status", "published")

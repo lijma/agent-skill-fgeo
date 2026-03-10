@@ -1181,6 +1181,218 @@ class TestPublishCommands:
         assert result.exit_code == 1
         assert "failed" in result.output.lower() or "掘金" in result.output
 
+    # ── 掘金沸点 (Juejin Pin) tests ────────────────────────────────────────────
+
+    def test_publish_content_juejin_pin_no_source_path(self, fgeo_home: Path, tmp_path: Path):
+        """Exit 1 when source_path is not recorded for 掘金沸点 content."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金沸点"])
+        src = tmp_path / "pin.md"
+        src.write_text("Short pin post.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金沸点"])
+        content_id = _extract_id(reg.output, "cont")
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "source" in result.output.lower() or "path" in result.output.lower()
+
+    def test_publish_content_juejin_pin_src_missing(self, fgeo_home: Path, tmp_path: Path):
+        """Exit 1 when the source file no longer exists on disk."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金沸点"])
+        src = tmp_path / "pin.md"
+        src.write_text("Short pin post.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金沸点"])
+        content_id = _extract_id(reg.output, "cont")
+        src.unlink()
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_content_juejin_pin_too_long(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Exit 1 when pin content exceeds 1000 characters."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金沸点"])
+        src = tmp_path / "pin.md"
+        src.write_text("x" * 1001 + "\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金沸点"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "too long" in result.output.lower() or "1000" in result.output
+
+    def test_publish_content_juejin_pin_success(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Happy path: publish_juejin_pin succeeds → pin URL displayed."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金沸点"])
+        src = tmp_path / "pin.md"
+        src.write_text("This is a short pin post.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金沸点"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        pin_id = "7400000000000000001"
+        pin_url = f"https://juejin.cn/pin/{pin_id}"
+
+        def _mock_publish(text, task_dir=None):
+            return {"status": "published", "url": pin_url, "id": pin_id, "message": ""}
+
+        monkeypatch.setattr("fgeo.publishers.juejin_pin.publish_juejin_pin", _mock_publish)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "juejin" in result.output.lower() or "沸点" in result.output or pin_id in result.output
+
+    def test_publish_content_juejin_pin_failed_response(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """publish_juejin_pin returns status=failed → exit 1."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "掘金沸点"])
+        src = tmp_path / "pin.md"
+        src.write_text("Short pin.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "掘金沸点"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _mock_publish(text, task_dir=None):
+            return {"status": "failed", "url": "", "id": "", "message": "login error"}
+
+        monkeypatch.setattr("fgeo.publishers.juejin_pin.publish_juejin_pin", _mock_publish)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower() or "沸点" in result.output
+
+    def test_publish_content_juejin_pin_alias(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """juejin-pin alias routes to the same flow as 掘金沸点."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "juejin-pin"])
+        src = tmp_path / "pin.md"
+        src.write_text("Pin via alias.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "juejin-pin"])
+        content_id = _extract_id(reg.output, "cont")
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _mock_publish(text, task_dir=None):
+            return {"status": "published", "url": "https://juejin.cn/pin/9999", "id": "9999", "message": ""}
+
+        monkeypatch.setattr("fgeo.publishers.juejin_pin.publish_juejin_pin", _mock_publish)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+
+    # ── DEV.to Quickpost tests ────────────────────────────────────────────────
+
+    def test_publish_content_devto_qp_no_source_path(self, fgeo_home: Path, tmp_path: Path):
+        """Exit 1 when source_path is not recorded for devto-quickpost content."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto-quickpost",
+                            "--directions", "short updates"])
+        src = tmp_path / "qp.md"
+        src.write_text("Short update.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto-quickpost"])
+        content_id = _extract_id(reg.output, "cont")
+        runner.invoke(app, ["content", "set", content_id, "source_path", ""])
+        # also set API key so we reach the source_path check
+        runner.invoke(app, ["platform", "set", "myproj", "devto-quickpost",
+                            "platform_secret", "testkey"])
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "source" in result.output.lower() or "path" in result.output.lower()
+
+    def test_publish_content_devto_qp_src_missing(self, fgeo_home: Path, tmp_path: Path):
+        """Exit 1 when the source file no longer exists on disk."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto-quickpost"])
+        src = tmp_path / "qp.md"
+        src.write_text("Update text.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto-quickpost"])
+        content_id = _extract_id(reg.output, "cont")
+        runner.invoke(app, ["platform", "set", "myproj", "devto-quickpost",
+                            "platform_secret", "testkey"])
+        src.unlink()
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_publish_content_devto_qp_no_api_key(self, fgeo_home: Path, tmp_path: Path):
+        """Exit 1 when platform_secret (API key) is not set."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto-quickpost"])
+        src = tmp_path / "qp.md"
+        src.write_text("Short update.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto-quickpost"])
+        content_id = _extract_id(reg.output, "cont")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "api" in result.output.lower() or "key" in result.output.lower()
+
+    def test_publish_content_devto_qp_too_long(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Exit 1 when quickpost content exceeds 256 characters."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto-quickpost"])
+        src = tmp_path / "qp.md"
+        src.write_text("x" * 257 + "\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto-quickpost"])
+        content_id = _extract_id(reg.output, "cont")
+        runner.invoke(app, ["platform", "set", "myproj", "devto-quickpost",
+                            "platform_secret", "testkey"])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "too long" in result.output.lower() or "256" in result.output
+
+    def test_publish_content_devto_qp_success(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """Happy path: publish_devto_quickpost succeeds → post URL displayed."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto-quickpost"])
+        src = tmp_path / "qp.md"
+        src.write_text("Hello DEV.to world!\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto-quickpost"])
+        content_id = _extract_id(reg.output, "cont")
+        runner.invoke(app, ["platform", "set", "myproj", "devto-quickpost",
+                            "platform_secret", "testkey"])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        post_url = "https://dev.to/user/hello-devto-world-abc"
+
+        def _mock_publish(text, api_key, task_dir=None):
+            return {"status": "published", "url": post_url, "id": 12345, "message": ""}
+
+        monkeypatch.setattr("fgeo.publishers.devto_quickpost.publish_devto_quickpost", _mock_publish)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 0
+        assert "dev.to" in result.output.lower() or "quickpost" in result.output.lower() or "12345" in result.output
+
+    def test_publish_content_devto_qp_failed_response(self, fgeo_home: Path, tmp_path: Path, monkeypatch):
+        """publish_devto_quickpost returns status=failed → exit 1."""
+        runner.invoke(app, ["project", "create", "myproj"])
+        runner.invoke(app, ["platform", "add", "myproj", "devto-quickpost"])
+        src = tmp_path / "qp.md"
+        src.write_text("Short update.\n")
+        reg = runner.invoke(app, ["content", "register", str(src),
+                                  "--project", "myproj", "--platform", "devto-quickpost"])
+        content_id = _extract_id(reg.output, "cont")
+        runner.invoke(app, ["platform", "set", "myproj", "devto-quickpost",
+                            "platform_secret", "testkey"])
+        monkeypatch.setattr("fgeo.commands.publish.FGEO_HOME", tmp_path / "fgeo_home")
+
+        def _mock_publish(text, api_key, task_dir=None):
+            return {"status": "failed", "url": "", "id": 0, "message": "invalid api key"}
+
+        monkeypatch.setattr("fgeo.publishers.devto_quickpost.publish_devto_quickpost", _mock_publish)
+        result = runner.invoke(app, ["publish", "content", content_id])
+        assert result.exit_code == 1
+        assert "failed" in result.output.lower() or "dev.to" in result.output.lower()
+
     def test_publish_content_blog_filename_already_has_date_prefix(self, fgeo_home: Path, tmp_path: Path):
         """Covers _with_date_prefix line: return filename when prefix already present."""
         ws = tmp_path / "ws"
