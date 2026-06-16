@@ -180,7 +180,8 @@ def _md_to_html(md: str) -> str:
         if re.match(r"^[-*+]\s+", line):
             items = []
             while i < len(lines) and re.match(r"^[-*+]\s+", lines[i]):
-                items.append(f"<li>{_inline_md(re.sub(r'^[-*+]\s+', '', lines[i]))}</li>")
+                item_text = re.sub(r"^[-*+]\s+", "", lines[i])
+                items.append(f"<li>{_inline_md(item_text)}</li>")
                 i += 1
             html_parts.append("<ul>" + "".join(items) + "</ul>")
             continue
@@ -189,7 +190,8 @@ def _md_to_html(md: str) -> str:
         if re.match(r"^\d+\.\s+", line):
             items = []
             while i < len(lines) and re.match(r"^\d+\.\s+", lines[i]):
-                items.append(f"<li>{_inline_md(re.sub(r'^\d+\.\s+', '', lines[i]))}</li>")
+                item_text = re.sub(r"^\d+\.\s+", "", lines[i])
+                items.append(f"<li>{_inline_md(item_text)}</li>")
                 i += 1
             html_parts.append("<ol>" + "".join(items) + "</ol>")
             continue
