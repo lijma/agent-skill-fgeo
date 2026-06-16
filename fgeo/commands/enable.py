@@ -1,4 +1,4 @@
-"""fgeo enable — Activate AI agent skills (copilot, cursor, etc.) with fcontext integration."""
+"""fgeo enable — Activate AI agent skills with fcontext integration."""
 
 from __future__ import annotations
 
@@ -16,12 +16,69 @@ from fgeo.config import load_config, save_config
 
 console = Console()
 
-SUPPORTED_AGENTS = ["copilot", "cursor", "claude", "trae", "opencode"]
+FGEO_AGENT_DESCRIPTION = (
+    "This workspace uses fgeo CLI for Generative Engine Optimization. Activate when user mentions "
+    "内容创作/GEO/SEO/gotomarket/宣传/推广/publish. Guides GTM lifecycle: project → goal → plan → "
+    "platform → content."
+)
+
+AGENT_CONFIGS = {
+    "copilot": {
+        "instructions_path": ".github/instructions/fgeo.instructions.md",
+        "skills_dir": ".github/skills",
+    },
+    "claude": {
+        "rules_path": ".claude/rules/fgeo.md",
+        "skills_dir": ".claude/skills",
+    },
+    "cursor": {
+        "rules_path": ".cursor/rules/fgeo.md",
+        "skills_dir": ".cursor/skills",
+    },
+    "trae": {
+        "rules_path": ".trae/rules/fgeo.md",
+        "skills_dir": ".trae/skills",
+    },
+    "qwen": {
+        "rules_path": ".qwen/rules/fgeo.md",
+        "skills_dir": ".qwen/skills",
+    },
+    "kiro": {
+        "rules_path": ".kiro/steering/fgeo.md",
+        "skills_dir": ".kiro/skills",
+    },
+    "opencode": {
+        "alias": "claude",
+    },
+    "openclaw": {
+        "skills_dir": "skills",
+    },
+    "zed": {
+        "skills_dir": ".agents/skills",
+    },
+    "pi": {
+        "skills_dir": ".pi/skills",
+    },
+    "antigravity": {
+        "rules_path": ".agent/rules/fgeo.md",
+        "skills_dir": ".agent/skills",
+    },
+    "codex": {
+        "skills_dir": ".codex/skills",
+    },
+}
+
+AGENT_ALIASES = {
+    "codex-agent": "codex",
+    "codex_agent": "codex",
+}
+
+SUPPORTED_AGENTS = list(AGENT_CONFIGS)
 
 # The instruction content that tells AI what fgeo can do
-FGEO_SKILL_INSTRUCTION = """---
+FGEO_SKILL_INSTRUCTION = f"""---
 name: 'fgeo'
-description: 'This workspace uses fgeo CLI for Generative Engine Optimization. Activate when user mentions 内容创作/GEO/SEO/gotomarket/宣传/推广/publish. Guides GTM lifecycle: project → goal → plan → platform → content.'
+description: '{FGEO_AGENT_DESCRIPTION}'
 applyTo: '**'
 ---
 
@@ -619,17 +676,72 @@ def _enable_fcontext_agent(agent: str, workspace: Path) -> bool:
         return False
 
 
-def _write_fgeo_skill_instruction(agent: str, workspace: Path) -> Path | None:
-    """Write fgeo skill instruction file for the AI agent."""
-    instructions_dir = workspace / ".github" / "instructions"
-    instructions_dir.mkdir(parents=True, exist_ok=True)
-    skill_file = instructions_dir / "fgeo.instructions.md"
-    skill_file.write_text(FGEO_SKILL_INSTRUCTION)
-    return skill_file
+def _normalize_agent(agent: str) -> str:
+    """Return the canonical agent name used by fgeo."""
+    return AGENT_ALIASES.get(agent.lower(), agent.lower())
 
 
-def enable(agent: str = typer.Argument(help="Agent to enable: copilot, cursor, claude, trae, opencode, or 'list'")) -> None:
+def _resolve_agent_config(agent: str) -> dict[str, str]:
+    """Resolve agent aliases that share another agent's config."""
+    config = AGENT_CONFIGS[agent]
+    if "alias" in config:
+        return AGENT_CONFIGS[config["alias"]]
+    return config
+
+
+def _without_frontmatter(markdown: str) -> str:
+    """Strip leading YAML frontmatter from markdown content."""
+    if not markdown.startswith("---\n"):
+        return markdown
+    _, _, rest = markdown.partition("\n---\n")
+    return rest.lstrip()
+
+
+def _skill_markdown() -> str:
+    """Return fgeo as a portable agent SKILL.md."""
+    return (
+        "---\n"
+        "name: fgeo\n"
+        f"description: '{FGEO_AGENT_DESCRIPTION}'\n"
+        "---\n\n"
+        f"{_without_frontmatter(FGEO_SKILL_INSTRUCTION)}"
+    )
+
+
+def _write_text_file(workspace: Path, rel_path: str, content: str) -> Path:
+    """Write a workspace-relative text file and return its absolute path."""
+    target = workspace / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return target
+
+
+def _write_fgeo_skill_instruction(agent: str, workspace: Path) -> list[Path]:
+    """Write fgeo instruction and skill files for the AI agent."""
+    config = _resolve_agent_config(agent)
+    written: list[Path] = []
+
+    instructions_path = config.get("instructions_path")
+    if instructions_path:
+        written.append(_write_text_file(workspace, instructions_path, FGEO_SKILL_INSTRUCTION))
+
+    rules_path = config.get("rules_path")
+    if rules_path:
+        written.append(_write_text_file(workspace, rules_path, _without_frontmatter(FGEO_SKILL_INSTRUCTION)))
+
+    skills_dir = config.get("skills_dir")
+    if skills_dir:
+        written.append(_write_text_file(workspace, f"{skills_dir}/fgeo/SKILL.md", _skill_markdown()))
+
+    return written
+
+
+def enable(
+    agent: str = typer.Argument(help=f"Agent to enable: {', '.join(SUPPORTED_AGENTS)} (or 'list')"),
+) -> None:
     """Enable AI agent integration — sets up fcontext dependency and fgeo skill instructions."""
+
+    agent = _normalize_agent(agent)
 
     # Handle 'list' to show status
     if agent == "list":
@@ -670,9 +782,11 @@ def enable(agent: str = typer.Argument(help="Agent to enable: copilot, cursor, c
         console.print(f"[yellow]⚠[/yellow] fcontext enable {agent} returned non-zero (may already be enabled)")
 
     # Step 4: Write fgeo skill instruction
-    skill_file = _write_fgeo_skill_instruction(agent, workspace)
-    if skill_file:
-        console.print(f"[green]✓[/green] fgeo skill instruction written to {skill_file.relative_to(workspace)}")
+    skill_files = _write_fgeo_skill_instruction(agent, workspace)
+    if skill_files:
+        console.print("[green]✓[/green] fgeo skill instruction written:")
+        for skill_file in skill_files:
+            console.print(f"  → {skill_file.relative_to(workspace)}")
 
     # Step 5: Update global config
     config = load_config()

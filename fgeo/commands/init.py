@@ -43,7 +43,7 @@ def init() -> None:
             f"  Config:   [cyan]{FGEO_CONFIG_FILE}[/cyan]\n"
             f"  Database: [cyan]{FGEO_DB_FILE}[/cyan]\n\n"
             "Next steps:\n"
-            "  1. [bold]fgeo enable copilot[/bold]  — activate AI agent integration\n"
+            "  1. [bold]fgeo enable copilot[/bold]  — activate AI agent integration (or claude/cursor/codex)\n"
             "  2. [bold]fgeo project create <name>[/bold] — create your first project",
             title="🚀 fgeo",
             border_style="green",

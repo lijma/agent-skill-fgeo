@@ -18,6 +18,8 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
+site/
+fgeo/_version.py
 
 # IDE
 .idea/

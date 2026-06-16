@@ -672,7 +672,8 @@ class TestPublishToWechatHeadlessAndEdgePaths:
 
         # _load_cookies returns saved cookies → launch_headless=True
         # _is_logged_in returns False → headless relaunch path + QR login
-        with patch("fgeo.publishers.wechat._load_cookies", return_value=[{"name": "sid", "value": "x"}]):
+        with patch("fgeo.publishers.wechat._load_cookies", return_value=[{"name": "sid", "value": "x"}]), \
+             patch("fgeo.publishers.wechat._clear_cookies"):
             result = self._run_with_mocked_pw(page, cm, is_logged_in=False, login_qr_result=True)
 
         assert result["status"] == "draft_saved"

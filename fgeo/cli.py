@@ -18,6 +18,7 @@ from fgeo.commands.plan import plan_app
 from fgeo.commands.publish import publish_app
 from fgeo.commands.status import status_command
 from fgeo.commands.style import style_app
+from fgeo.commands.enable import SUPPORTED_AGENTS
 
 console = Console()
 
@@ -52,7 +53,7 @@ def init() -> None:
 
 @app.command()
 def enable(
-    agent: str = typer.Argument(help="Agent to enable: copilot, cursor, claude, trae, opencode (or 'list')"),
+    agent: str = typer.Argument(help=f"Agent to enable: {', '.join(SUPPORTED_AGENTS)} (or 'list')"),
 ) -> None:
     """Enable AI agent integration — sets up fcontext + fgeo skill instructions."""
     from fgeo.commands.enable import enable as _enable

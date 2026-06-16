@@ -25,7 +25,7 @@ class TestVersion:
     def test_version(self, fgeo_home: Path):
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert "0.4.0" in result.output
+        assert result.output.startswith("fgeo ")
 
     def test_help(self, fgeo_home: Path):
         result = runner.invoke(app, ["--help"])
@@ -477,9 +477,12 @@ class TestConfigFunctions:
 
 class TestEnableCommand:
     def test_enable_list(self, fgeo_home: Path):
+        from fgeo.commands.enable import SUPPORTED_AGENTS
+
         result = runner.invoke(app, ["enable", "list"])
         assert result.exit_code == 0
-        assert "copilot" in result.output
+        for agent in SUPPORTED_AGENTS:
+            assert agent in result.output
 
     def test_enable_unknown_agent(self, fgeo_home: Path):
         result = runner.invoke(app, ["enable", "unknown-agent"])
@@ -548,6 +551,47 @@ class TestEnableCommand:
         assert result.exit_code == 0
         assert "non-zero" in result.output
 
+    def test_enable_all_supported_agents(
+        self, fgeo_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        from unittest.mock import MagicMock
+        from fgeo.config import load_config
+        from fgeo.commands.enable import SUPPORTED_AGENTS
+
+        (tmp_path / ".fcontext").mkdir()
+        monkeypatch.setattr("fgeo.commands.enable.shutil.which", lambda _cmd: "/usr/bin/fcontext")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        monkeypatch.setattr("fgeo.commands.enable.subprocess.run", lambda *a, **kw: mock_proc)
+        monkeypatch.chdir(tmp_path)
+
+        for agent in SUPPORTED_AGENTS:
+            result = runner.invoke(app, ["enable", agent])
+            assert result.exit_code == 0, result.output
+
+        config = load_config()
+        for agent in SUPPORTED_AGENTS:
+            assert agent in config["skills"]
+
+    def test_enable_codex_agent_alias(
+        self, fgeo_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        from unittest.mock import MagicMock
+        from fgeo.config import load_config
+
+        (tmp_path / ".fcontext").mkdir()
+        monkeypatch.setattr("fgeo.commands.enable.shutil.which", lambda _cmd: "/usr/bin/fcontext")
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        monkeypatch.setattr("fgeo.commands.enable.subprocess.run", lambda *a, **kw: mock_proc)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["enable", "codex-agent"])
+
+        assert result.exit_code == 0
+        assert "codex" in load_config()["skills"]
+        assert (tmp_path / ".codex" / "skills" / "fgeo" / "SKILL.md").exists()
+
 
 class TestEnableHelpers:
     """Test enable helper functions directly to cover exception branches."""
@@ -569,6 +613,71 @@ class TestEnableHelpers:
 
         monkeypatch.setattr("fgeo.commands.enable.subprocess.run", raise_err)
         assert _enable_fcontext_agent("copilot", tmp_path) is False
+
+    def test_write_fgeo_skill_instruction_paths(self, tmp_path: Path):
+        from fgeo.commands.enable import _write_fgeo_skill_instruction
+
+        expected_paths = {
+            "copilot": {
+                ".github/instructions/fgeo.instructions.md",
+                ".github/skills/fgeo/SKILL.md",
+            },
+            "claude": {
+                ".claude/rules/fgeo.md",
+                ".claude/skills/fgeo/SKILL.md",
+            },
+            "cursor": {
+                ".cursor/rules/fgeo.md",
+                ".cursor/skills/fgeo/SKILL.md",
+            },
+            "trae": {
+                ".trae/rules/fgeo.md",
+                ".trae/skills/fgeo/SKILL.md",
+            },
+            "qwen": {
+                ".qwen/rules/fgeo.md",
+                ".qwen/skills/fgeo/SKILL.md",
+            },
+            "kiro": {
+                ".kiro/steering/fgeo.md",
+                ".kiro/skills/fgeo/SKILL.md",
+            },
+            "opencode": {
+                ".claude/rules/fgeo.md",
+                ".claude/skills/fgeo/SKILL.md",
+            },
+            "openclaw": {
+                "skills/fgeo/SKILL.md",
+            },
+            "zed": {
+                ".agents/skills/fgeo/SKILL.md",
+            },
+            "pi": {
+                ".pi/skills/fgeo/SKILL.md",
+            },
+            "antigravity": {
+                ".agent/rules/fgeo.md",
+                ".agent/skills/fgeo/SKILL.md",
+            },
+            "codex": {
+                ".codex/skills/fgeo/SKILL.md",
+            },
+        }
+
+        for agent, paths in expected_paths.items():
+            workspace = tmp_path / agent
+            written = _write_fgeo_skill_instruction(agent, workspace)
+            actual = {str(path.relative_to(workspace)) for path in written}
+            assert actual == paths
+            for rel_path in paths:
+                target = workspace / rel_path
+                assert target.exists()
+                assert "fgeo" in target.read_text(encoding="utf-8")
+
+    def test_without_frontmatter_returns_plain_markdown(self):
+        from fgeo.commands.enable import _without_frontmatter
+
+        assert _without_frontmatter("# plain markdown\n") == "# plain markdown\n"
 
 
 class TestMainModule:
@@ -2702,9 +2811,6 @@ class TestPublishMediumFlow:
         result = runner.invoke(app, ["publish", "content", content_id])
         assert result.exit_code == 0
         assert "Already published" in result.output
-
-
-
 
 
 
